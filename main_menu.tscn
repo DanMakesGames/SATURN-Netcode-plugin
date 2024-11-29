@@ -1,0 +1,49 @@
+[gd_scene load_steps=2 format=3 uid="uid://b2pmdq6ytltf0"]
+
+[ext_resource type="Script" path="res://main_menu.gd" id="1_f6c1i"]
+
+[node name="VBoxContainer" type="VBoxContainer"]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -577.5
+offset_top = -322.0
+offset_right = 577.5
+offset_bottom = 322.0
+grow_horizontal = 2
+grow_vertical = 2
+alignment = 1
+script = ExtResource("1_f6c1i")
+
+[node name="StatusText" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Welcome To Simple Aces"
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="HBoxContainer" type="HBoxContainer" parent="."]
+layout_mode = 2
+alignment = 1
+
+[node name="ConnectButton" type="Button" parent="HBoxContainer"]
+layout_mode = 2
+text = "Connect
+"
+
+[node name="StartButton" type="Button" parent="HBoxContainer"]
+layout_mode = 2
+text = "Start Game
+"
+
+[node name="IpLineEdit" type="LineEdit" parent="HBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "127.0.0.1"
+placeholder_text = "IP"
+expand_to_text_length = true
+
+[connection signal="pressed" from="HBoxContainer/ConnectButton" to="." method="_on_connect_button_pressed"]
+[connection signal="pressed" from="HBoxContainer/StartButton" to="." method="_on_start_button_pressed"]

@@ -1,0 +1,11 @@
+[gd_scene load_steps=3 format=3 uid="uid://cgocabgv0fd7x"]
+
+[ext_resource type="Script" path="res://level.gd" id="1_bvquu"]
+[ext_resource type="PackedScene" uid="uid://tesm0efvhgac" path="res://plane.tscn" id="2_2l1t8"]
+
+[node name="Node2D" type="Node2D"]
+script = ExtResource("1_bvquu")
+
+[node name="PlanePlayer1" parent="." instance=ExtResource("2_2l1t8")]
+unique_name_in_owner = true
+position = Vector2(377, 313)
