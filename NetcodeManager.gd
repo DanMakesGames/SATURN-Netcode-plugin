@@ -5,6 +5,9 @@ const SAVE_STATE_FUNCTION : String = "_save_state"
 const LOAD_STATE_FUNCTION : String = "_load_state"
 
 var started : bool
+var current_tick :int
+func get_current_tick() -> int:
+	return current_tick
 
 signal game_started()
 signal game_stopped()
@@ -25,7 +28,11 @@ class TickState extends Object:
 	
 	## node path -> EntityState
 	var entity_states : Dictionary
-
+	
+	func _init(_tick : int) -> void:
+		tick = _tick
+		
+# TODO Should entitiy state contain the input for this node or should there be a seperate input buffer?
 class EntityState extends Object:
 	## Is this game state a client-side prediction or a true state from the server? Always true on the server.
 	var is_game_state_true : bool
@@ -95,11 +102,19 @@ func _physics_process(delta: float) -> void:
 			
 		# Perform Game logic Tick
 	# Save Game State
-	#save_game_state()
+	
+	# create a new Tick State
+	var fresh_tick_state : TickState = TickState.new(get_current_tick())
+	save_game_state(fresh_tick_state.entity_states)
+	
 	# Server: Send true state to all clients
+	if multiplayer.is_server():
+		send_state_to_all_clients()
+	
+	current_tick = current_tick + 1
 
 ## Either add or modify state buffer
-func save_game_state(entity_states : Dictionary) -> void:
+func save_game_state(entity_states : Dictionary, should_overwrite_true_states : bool = true) -> void:
 	var nodes : Array[Node] = get_tree().get_nodes_in_group(NETWORK_ENTITY_GROUP)
 	for node in nodes:
 		if !node.has_method(SAVE_STATE_FUNCTION) || !node.is_inside_tree() || node.is_queued_for_deletion():
@@ -110,7 +125,7 @@ func save_game_state(entity_states : Dictionary) -> void:
 		var entity_state : EntityState = entity_states.get_or_add(node_path)
 		
 		# Keep in mind, on the client we NEVER want to overwrite a true state.
-		if multiplayer.is_server() || entity_state.is_game_state_true == false:
+		if should_overwrite_true_states || entity_state.is_game_state_true == false:
 			entity_state.game_state = node.call(SAVE_STATE_FUNCTION)
 
 func load_game_tick(tick : int, should_load_true_states : bool) -> void:
