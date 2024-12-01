@@ -22,15 +22,18 @@ NetcodeManager="*res://NetcodeManager.gd"
 
 [debug]
 
+gdscript/warnings/unassigned_variable=0
+gdscript/warnings/unassigned_variable_op_assign=0
+gdscript/warnings/unused_variable=0
 gdscript/warnings/untyped_declaration=2
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/godot-rollback-netcode/plugin.cfg")
+enabled=PackedStringArray()
 
 [global_group]
 
-network_sync=""
+network_entity=""
 
 [input]
 
