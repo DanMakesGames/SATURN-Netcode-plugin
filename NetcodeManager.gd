@@ -59,7 +59,7 @@ var players : Array[Player]
 ## indexed by tick. Element Last is most recent.
 var state_buffer : Array[TickState]
 
-# TODO, split off input into its own buffer: peer_id -> Array[PlayerInput]
+## peer_id -> Array[PlayerInput]
 var input_buffer : Dictionary
 
 ## state on this tick
@@ -70,15 +70,12 @@ class TickState extends Object:
 	## Is this game state a client-side prediction or a true state from the server? Always true on the server.
 	var is_true : bool = false
 	
-	## node path -> EntityState
+	## node path -> EntityState (in Dictionary Format)
+	## gameplay state at the end of this tick ("as a result of this tick")
 	var entity_states : Dictionary
 	
 	func _init(_tick : int) -> void:
 		tick = _tick
-		
-class EntityState extends Object:
-	## gameplay state at the end of this tick ("as a result of this tick")
-	var game_state : Dictionary
 
 class PlayerInput extends Object:
 	var tick : int = 0
@@ -301,7 +298,7 @@ func save_game_state(entity_states : Dictionary, should_overwrite_true_states : 
 		
 		# Does a state exist for this node currently? If not create one.
 		var node_path : String = node.get_path()
-		var entity_state : EntityState = entity_states.get_or_add(node_path, EntityState.new())
+		var entity_state : Dictionary = entity_states.get_or_add(node_path, {})
 		
 		# Keep in mind, on the client we NEVER want to overwrite a true state.
 		if should_overwrite_true_states || entity_state.is_true == false:
@@ -316,7 +313,7 @@ func load_game_state(entity_states : Dictionary, only_load_true_states : bool = 
 			continue
 			
 		var node_path : String = node.get_path()
-		var entity_state : EntityState = entity_states.get(node_path)
+		var entity_state : Dictionary = entity_states.get(node_path)
 		
 		if entity_state == null:
 			continue
@@ -351,13 +348,63 @@ func send_state_to_all_clients() -> void:
 	var latest_state := get_tick_state(last_processed_tick)
 	assert(latest_state != null, "Latest processed state is null")
 	
-	for player in players:
-		send_state_to_client(player.peer_id, latest_state)
+	for node_path : String in latest_state.entity_states:
+		var authority_peer_id : int = get_node(node_path).get_multiplayer_authority()
+		var player_input_for_node : Dictionary = {}
+		if authority_peer_id != 1: 
+			var player_input : PlayerInput = get_player_input(authority_peer_id, last_processed_tick)
+			player_input_for_node = player_input.input.get(node_path)
+			assert(player_input_for_node != null, "no input was in buffer for this node")
+			
+		var node_state : Dictionary = latest_state.entity_states[node_path]
+		
+		for player in players: 
+			send_node_state_to_client(player.peer_id, last_processed_tick, node_path, node_state, authority_peer_id, player_input_for_node)
 
 ## On Server
-func send_state_to_client() -> void:
-	pass
+func send_node_state_to_client(peer_id: int, tick: int, node_path: String, node_state: Dictionary, input_peer_id: int, node_input: Dictionary) -> void:
+	var message := {}
+	message[message_serializer.StateKeys.TICK] = tick
+	message[message_serializer.StateKeys.INPUT_PEER_ID] = input_peer_id
+	message[message_serializer.StateKeys.NODE_PATH] = node_path
+	message[message_serializer.StateKeys.STATE] = message_serializer.serialize_state(node_state)
+	message[message_serializer.StateKeys.PLAYER_INPUT_DATA] = message_serializer.serialize_node_input(node_input)
 	
+	var message_data : PackedByteArray = message_serializer.serialize_state_message(message)
+	assert(message_data.size() != 0, "Error serializing state")
+	
+	print_debug("send_state_to_clients, message size: %d" %message_data.size())
+	network_adaptor.send_state_update(peer_id, message_data)
+
+## On Client. State update for a single node.
+func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
+	assert(serialized_message.size() != 0, "Recieved empty state message")
+	
+	var message := message_serializer.deserialize_state_message(serialized_message)
+	assert(message.is_empty() != true, "Deserialization issue.")
+	
+	var tick : int = message[message_serializer.StateKeys.TICK]
+	
+	# we have the state for a single node here
+	var tick_state : TickState = get_tick_state(tick)
+	
+	# the clients should always be ahead of the server, im pretty sure.
+	assert(tick_state != null, "Client recieved state update from future.")
+	
+	# update state buffer
+	var node_path : String = message[message_serializer.StateKeys.NODE_PATH]
+	assert(tick_state.entity_states.get(node_path) != null, "Received state for node that doesnt exist in local state_buffer")
+	
+	tick_state.entity_states[node_path] = message[message_serializer.StateKeys.STATE]
+	
+	# update input buffer
+	var input_peer_id : int = message[message_serializer.StateKeys.INPUT_PEER_ID] 
+	var player_input := get_player_input(input_peer_id, tick)
+	player_input.input[node_path] = message[message_serializer.StateKeys.PLAYER_INPUT_DATA]
+	
+	# request a rollback if we just recieved a new state
+	# deserialize into game_state Dictionary and input_state Dictionary for this node
+
 ## On Client, used to send local player input for all nodes up to the server
 func send_input_to_server(serialized_input_ticks: Array[PackedByteArray], initial_tick : int, peer_id : int = 1) -> void:
 	var message := {}
@@ -369,15 +416,6 @@ func send_input_to_server(serialized_input_ticks: Array[PackedByteArray], initia
 	# Debug
 	#print_debug("send_input_to_server, message size: %d" %message_bytes.size())
 	network_adaptor.send_input_update(peer_id, message_bytes)
-
-## On Client
-func on_recieve_state_update() -> void:
-	# request a rollback if we just recieved a new state
-	# deserialize into game_state Dictionary and input_state Dictionary for this node
-	
-	# Send input and game state together for a specific node. I'd say this is slightly easier with combined. +1
-	
-	pass
 
 ## On Server
 func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) -> void:
