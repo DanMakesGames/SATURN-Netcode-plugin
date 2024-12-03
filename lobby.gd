@@ -7,6 +7,9 @@ const MAX_CLIENTS : int = 8
 signal server_connected
 signal server_connected_failed
 
+# index : Peer_id
+var player_assignments : Dictionary
+
 # sever side
 var players_loaded : int = 0
 
@@ -52,8 +55,11 @@ func connect_to_server(input_IP : String ) -> void:
 	initialize_client(input_IP)
 	
 func on_peer_connected(peer_id : int) -> void:
-	print("peer connected peer_id: %d" % peer_id)
 	if multiplayer.is_server():
+		print("SERVER: peer connected peer_id: %d" % peer_id)
+		NetcodeManager.add_player(peer_id)
+	else:
+		print("CLIENT: peer connected peer_id: %d" % peer_id)
 		NetcodeManager.add_player(peer_id)
 
 func on_peer_disconnected(peer_id : int) -> void:
@@ -73,10 +79,17 @@ func start_game_server() -> void:
 	# let server gather some ping data if it hasnt already.
 	await(2.0)
 	print("Server: Begin Game")
-	load_game.rpc()
+	
+	var count : int = 0
+	for peer_id in multiplayer.get_peers():
+		player_assignments[count] = peer_id
+		count = count + 1
+		
+	load_game.rpc(player_assignments)
 
 @rpc("authority", "call_local", "reliable")
-func load_game() -> void:
+func load_game(_player_assignments: Dictionary) -> void:
+	player_assignments = _player_assignments
 	get_tree().change_scene_to_file("res://level.tscn")
 
 @rpc("any_peer", "call_local", "reliable")

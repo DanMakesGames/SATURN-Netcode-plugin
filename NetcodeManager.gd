@@ -96,6 +96,10 @@ class PlayerInput extends Object:
 		input = _input
 
 func add_player(peer_id : int) -> void:
+	# Don't add the server
+	if peer_id == 1:
+		return
+	
 	if get_player(peer_id) != null:
 		push_error("DUPLICATE PLAYER ADD")
 		return
@@ -440,7 +444,9 @@ func send_state_to_all_clients() -> void:
 
 		var node_state : Dictionary = latest_state.entity_states[node_path].state
 		
-		for player in players: 
+		for player in players:
+			if player.last_input_tick_recieved == -1:
+				continue
 			send_node_state_to_client(player.peer_id, last_processed_tick, node_path, node_state, authority_peer_id, player_input_for_node, player.last_input_tick_recieved)
 
 ## On Server
@@ -496,7 +502,7 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 		
 	# update input buffer
 	var input_peer_id : int = message[message_serializer.StateKeys.INPUT_PEER_ID] 
-	var player_input := get_player_input(input_peer_id, tick)
+	var player_input := get_or_add_player_input(input_peer_id, tick)
 	player_input.input[node_path] = message[message_serializer.StateKeys.PLAYER_INPUT_DATA]
 	player_input.is_predicted = false
 	

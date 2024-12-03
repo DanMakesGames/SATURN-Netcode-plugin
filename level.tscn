@@ -9,3 +9,7 @@ script = ExtResource("1_bvquu")
 [node name="PlanePlayer1" parent="." instance=ExtResource("2_2l1t8")]
 unique_name_in_owner = true
 position = Vector2(377, 313)
+
+[node name="PlanePlayer2" parent="." instance=ExtResource("2_2l1t8")]
+unique_name_in_owner = true
+position = Vector2(833, 310)
