@@ -31,19 +31,19 @@ func _save_state() -> Dictionary:
 
 ## Network Plugin
 func _load_state(state: Dictionary) -> void:
-	pass
+	position = state["position"]
+	velocity = state["velocity"]
 
 func process_input(input : Dictionary, delta : float) -> void:
 	horizontal_input = input.get("horizontal", 0.0)
 	vertical_input = input.get("vertical", 0.0)
 
 func process_movement(delta_time : float) -> void:
-	var thrust_delta_velocity : Vector2 = Vector2(horizontal_input, vertical_input).normalized() * acceleration * delta_time
-	var drag_delta_velocity := (velocity * drag * delta_time) * -1.0 * velocity.normalized()
-		
-	velocity = thrust_delta_velocity + drag_delta_velocity
-	#velocity = Vector2(1,0)
-	position += delta_time * velocity
+	#var thrust_delta_velocity : Vector2 = Vector2(horizontal_input, vertical_input).normalized() * acceleration * delta_time
+	#var drag_delta_velocity := (velocity * drag * delta_time) * -1.0 * velocity.normalized()
+	#velocity = thrust_delta_velocity + drag_delta_velocity
+	#position += delta_time * velocity
+	position += delta_time * 100 * Vector2(horizontal_input, vertical_input).normalized()
 
 ## provides single player functionality
 func _physics_process(delta: float) -> void:

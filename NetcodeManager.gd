@@ -189,6 +189,7 @@ func generate_input_prediction(previous_input: Dictionary) -> Dictionary:
 
 ## Generates input prediction and saves it to the input_buffer.
 ## Returns newly generated input prediction. If no previous input can be found, just returns empty dictionary.
+## TODO If on server, when we timeout on a client's unrecieved input and move on without them, advance their last_input_tick_recieved
 func generate_and_save_input_prediction(tick: int, peer_id: int, node_path: String) -> Dictionary:
 	var previous_player_input: PlayerInput = get_player_input(peer_id, tick - 1)
 	if previous_player_input == null:
