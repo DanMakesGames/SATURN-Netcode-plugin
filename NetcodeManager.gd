@@ -9,7 +9,7 @@ const NETWORK_ENTITY_GROUP : String = "network_entity"
 const SAVE_STATE_FUNCTION : String = "_save_state"
 const LOAD_STATE_FUNCTION : String = "_load_state"
 const GET_LOCAL_INPUT_FUNCTION : String = "_get_local_input"
-const NETWORK_PROCESS_FUNCTION : String = "transform_process_function"
+const NETWORK_PROCESS_FUNCTION : String = "_network_transform_process"
 
 # Variables
 var started : bool
@@ -67,15 +67,19 @@ class TickState extends Object:
 	## tick for this state
 	var tick : int
 	
-	## Is this game state a client-side prediction or a true state from the server? Always true on the server.
-	var is_true : bool = false
-	
-	## node path -> EntityState (in Dictionary Format)
+	## node path -> EntityState
 	## gameplay state at the end of this tick ("as a result of this tick")
 	var entity_states : Dictionary
 	
 	func _init(_tick : int) -> void:
 		tick = _tick
+
+## State for a single node at a single frame
+class EntityState extends Object:
+	## Is this game state a client-side prediction or a true state from the server? Always true on the server.
+	var is_true: bool = false
+	
+	var state: Dictionary
 
 class PlayerInput extends Object:
 	var tick : int = 0
@@ -83,7 +87,7 @@ class PlayerInput extends Object:
 	## is this predicted input or true input from the server? On the owning client this is always true.
 	var is_predicted : bool = true
 	
-	## node_path -> InputData (in dictionary format)
+	## node_path (String) -> InputData (Dictionary)
 	var input : Dictionary = {}
 	
 	func _init(_tick: int, _is_predicted : bool, _input: Dictionary) -> void:
@@ -139,7 +143,8 @@ func get_or_add_tick_state(tick : int) -> TickState:
 		return state_buffer[tick_delta - 1]
 
 func get_or_add_player_input(peer_id: int, tick: int) -> PlayerInput:
-	var player_input_buffer : Array[PlayerInput] = input_buffer.get_or_add(peer_id,[])
+	var default_array : Array[PlayerInput] = []
+	var player_input_buffer : Array[PlayerInput] = input_buffer.get_or_add(peer_id,default_array)
 	
 	# catch if the player tick belongs at the end of the the buffer
 	if (player_input_buffer.size() == 0) || (tick > player_input_buffer.back().tick):
@@ -161,8 +166,9 @@ func get_or_add_player_input(peer_id: int, tick: int) -> PlayerInput:
 	return null
 
 func get_player_input(peer_id: int, tick: int) -> PlayerInput:
-	var player_input_buffer : Array[PlayerInput] = input_buffer.get(peer_id)
-	if player_input_buffer == null:
+	var default_array : Array[PlayerInput] = []
+	var player_input_buffer : Array[PlayerInput] = input_buffer.get(peer_id, default_array)
+	if player_input_buffer.is_empty():
 		return null
 		
 	for player_input in player_input_buffer:
@@ -174,15 +180,34 @@ func add_outbound_player_input(player_input : Dictionary) -> void:
 	var serialized_player_input : PackedByteArray = message_serializer.serialize_player_input(player_input)
 	player_input_departure_buffer.push_back(serialized_player_input)
 
+func generate_input_prediction(previous_input: Dictionary) -> Dictionary:
+	return previous_input
+
+## Generates input prediction and saves it to the input_buffer.
+## Returns newly generated input prediction. If no previous input can be found, just returns empty dictionary.
+func generate_and_save_input_prediction(tick: int, peer_id: int, node_path: String) -> Dictionary:
+	var previous_player_input: PlayerInput = get_player_input(peer_id, tick - 1)
+	if previous_player_input == null:
+		return {}
+	
+	var fresh_input_prediction: Dictionary = generate_input_prediction(previous_player_input.input[node_path])
+	
+	# save to input buffer
+	var player_input: PlayerInput = get_or_add_player_input(peer_id, tick)
+	player_input.input[node_path] = fresh_input_prediction
+	player_input.is_predicted = true
+	
+	return fresh_input_prediction
+	
 func request_rollback(tick : int) -> void:
-	if (tick <= last_processed_tick) && (tick < rollback_tick):
+	if (tick <= last_processed_tick) && ((tick < rollback_tick) || (rollback_tick == -1)):
 		rollback_tick = tick 
 
 func _ready() -> void:
 	network_adaptor = NetworkAdaptor.new()
 	add_child(network_adaptor)
 	network_adaptor.recieve_input_update.connect(self.on_recieve_input_update)
-	network_adaptor.recieve_state_update.connect(self.on_recieve_state_update)
+	network_adaptor.recieve_state_update.connect(self.on_recieve_node_state_update)
 	
 	message_serializer = MessageSerializer.new()
 
@@ -198,14 +223,19 @@ func client_game_start() -> void:
 
 # main loop
 func _physics_process(delta: float) -> void:
+	if not started:
+		return
+	
 	# STEP 1: PERFORM ANY ROLLBACKS, IF NECESSARY. Proccess newly recieved input (on the server), or newly recieved 
-		# TODO Client Rollback (state rollback): Each frame load true state if it exits, or calculate predictated state if it does not.
-			
+	# Client Rollback (state rollback): Each frame load true state if it exits, or calculate predictated state if it does not.
+	if multiplayer.is_server() == false:
+		perform_rollback()
+	
 	# STEP 2: Client, UPSTREAM THROTTLE. skip ticks to ensure that we have a decent buffer of client input. See Overwatch.
 	# TODO
 	
-	if !started:
-		return
+	# TODO: Cleanup state buffer. Retire state that it's unlikely we'll need to return to.
+	# Let's save the input buffer on the server so we can save it as a replay?
 	
 	if multiplayer.is_server() == false:
 		perform_realtime_tick()
@@ -220,20 +250,24 @@ func _physics_process(delta: float) -> void:
 			if player_input == null || player_input.is_predicted == true:
 				has_received_input = false
 				break
-		
+				
 		if has_received_input:
 			network_tick()
 			# Save Game State
 			# create a new Tick State
-			var current_tick_state := get_tick_state(get_current_tick())
-			save_game_state(current_tick_state.entity_states)
+			if not save_game_state(current_tick, true):
+				push_error("error saving game in server realtime tick")
+				get_tree().quit(1)
+				return
+			
+			#print("SERVER: Processed tick: %d" % current_tick)
 			last_processed_tick = last_processed_tick + 1
 	
 	# Server: Send true state to all clients
 	if multiplayer.is_server():
 		send_state_to_all_clients()
 	
-func perform_realtime_tick() -> void:
+func perform_realtime_tick() -> bool:
 	current_tick = last_processed_tick + 1
 	
 	# Cleanup departing player input buffer
@@ -271,26 +305,37 @@ func perform_realtime_tick() -> void:
 	
 	# Save Game State
 	# create a new Tick State
-	var current_tick_state := get_tick_state(get_current_tick())
-	save_game_state(current_tick_state.entity_states)
+	if not save_game_state(current_tick, false):
+		return false
 	
+	#print("CLIENT: processed tick: %d" % current_tick)
 	last_processed_tick = last_processed_tick + 1
+	
+	return true
 
 func network_tick() -> void:
 	# Call on this node grabbing either from entity state or the input state, neutral
 	var nodes : Array[Node] = get_tree().get_nodes_in_group(NETWORK_ENTITY_GROUP)
 	for node in nodes:
 		var player_input : PlayerInput = get_player_input(node.get_multiplayer_authority(), current_tick)
-		assert(player_input != null, "Player Input is null in network tick")
 		
-		var input_for_node : Dictionary = player_input.get(String(node.get_path()))
-		assert(input_for_node != null, "Node not found in player input.")
+		# if we dont have any true input, then do a prediction.
+		var node_input: Dictionary
+		if player_input == null:
+			node_input = generate_and_save_input_prediction(current_tick, node.get_multiplayer_authority(), node.get_path())
+		else:
+			node_input = player_input.input.get(String(node.get_path()), {})
 		
 		if node.has_method(NETWORK_PROCESS_FUNCTION):
-			node.call(NETWORK_PROCESS_FUNCTION, input_for_node)
+			node.call(NETWORK_PROCESS_FUNCTION, node_input)
 
 ## Either add or modify state buffer
-func save_game_state(entity_states : Dictionary, should_overwrite_true_states : bool = true) -> void:
+func save_game_state(tick: int, should_overwrite_true_states : bool = true) -> bool:
+	var tick_state := get_or_add_tick_state(tick)
+	if tick_state == null:
+		return false
+	
+	var entity_states : Dictionary = tick_state.entity_states
 	var nodes : Array[Node] = get_tree().get_nodes_in_group(NETWORK_ENTITY_GROUP)
 	for node in nodes:
 		if !node.has_method(SAVE_STATE_FUNCTION) || !node.is_inside_tree() || node.is_queued_for_deletion():
@@ -298,28 +343,40 @@ func save_game_state(entity_states : Dictionary, should_overwrite_true_states : 
 		
 		# Does a state exist for this node currently? If not create one.
 		var node_path : String = node.get_path()
-		var entity_state : Dictionary = entity_states.get_or_add(node_path, {})
+		var entity_state : EntityState = entity_states.get_or_add(node_path, EntityState.new())
 		
 		# Keep in mind, on the client we NEVER want to overwrite a true state.
 		if should_overwrite_true_states || entity_state.is_true == false:
-			entity_state.game_state = node.call(SAVE_STATE_FUNCTION)
+			entity_state.state = node.call(SAVE_STATE_FUNCTION)
+	
+	return true
 
 ## loads game state.
-## Arguement only_load_true_states is for client side rollbacks.
-func load_game_state(entity_states : Dictionary, only_load_true_states : bool = false) -> void:
+## Arguement only_load_true_states is for loading each tick of a rollback after the inital load were we want to everything.
+func load_game_state(tick: int, only_load_true_states : bool = false) -> bool:
+	var tick_state := get_tick_state(tick)
+
+	if tick_state == null:
+		assert(tick_state != null, "Tried to load state we dont have.")
+		return false
+		
+	var entity_states : Dictionary = tick_state.entity_states
+	
 	var nodes : Array[Node] = get_tree().get_nodes_in_group(NETWORK_ENTITY_GROUP)
 	for node in nodes: 
 		if !node.has_method(LOAD_STATE_FUNCTION) || !node.is_inside_tree() || node.is_queued_for_deletion():
 			continue
 			
 		var node_path : String = node.get_path()
-		var entity_state : Dictionary = entity_states.get(node_path)
+		var entity_state : EntityState = entity_states.get(node_path)
 		
 		if entity_state == null:
 			continue
 		
-		if (only_load_true_states && entity_state.is_game_state_true) || only_load_true_states == false:
-			node.call(LOAD_STATE_FUNCTION, entity_state.game_state)
+		if (only_load_true_states && entity_state.is_true) || only_load_true_states == false:
+			node.call(LOAD_STATE_FUNCTION, entity_state.state)
+	
+	return true
 
 ## Gathers all the input for everynode this client has authority over. Called on clients. 
 func gather_local_input() -> Dictionary:
@@ -333,7 +390,7 @@ func gather_local_input() -> Dictionary:
 			continue
 		
 		var node_input : Dictionary = node.call(GET_LOCAL_INPUT_FUNCTION)
-		local_player_input[node.get_path()] = node_input
+		local_player_input[String(node.get_path())] = node_input
 		
 	return local_player_input
 
@@ -341,6 +398,30 @@ func gather_local_input() -> Dictionary:
 func get_departing_player_input() -> Array[PackedByteArray]:
 	var departing_player_input : Array[PackedByteArray] = player_input_departure_buffer.slice(0, max_player_input_ticks_per_message)
 	return departing_player_input
+
+## Client Side.
+func perform_rollback() -> bool:
+	if rollback_tick < 0:
+		return true
+	#print("CLIENT: Rollback to %d" % rollback_tick)
+	is_rollback = true
+	
+	# Rewind Time and load rollback state.
+	if not load_game_state(rollback_tick, false):
+		return false
+	
+	# loop and perform ticks.
+	for tick in range(rollback_tick, last_processed_tick + 1): 
+		current_tick = tick
+		network_tick()	
+
+		# save new state each tick.
+		save_game_state(current_tick, false)
+		
+	is_rollback = false
+	current_tick = last_processed_tick + 1
+	rollback_tick = -1
+	return true
 
 ## On Server
 func send_state_to_all_clients() -> void:
@@ -353,27 +434,37 @@ func send_state_to_all_clients() -> void:
 		var player_input_for_node : Dictionary = {}
 		if authority_peer_id != 1: 
 			var player_input : PlayerInput = get_player_input(authority_peer_id, last_processed_tick)
-			player_input_for_node = player_input.input.get(node_path)
-			assert(player_input_for_node != null, "no input was in buffer for this node")
-			
-		var node_state : Dictionary = latest_state.entity_states[node_path]
+			if player_input == null:
+				continue
+			player_input_for_node = player_input.input.get(node_path, {})
+
+		var node_state : Dictionary = latest_state.entity_states[node_path].state
 		
 		for player in players: 
-			send_node_state_to_client(player.peer_id, last_processed_tick, node_path, node_state, authority_peer_id, player_input_for_node)
+			send_node_state_to_client(player.peer_id, last_processed_tick, node_path, node_state, authority_peer_id, player_input_for_node, player.last_input_tick_recieved)
 
 ## On Server
-func send_node_state_to_client(peer_id: int, tick: int, node_path: String, node_state: Dictionary, input_peer_id: int, node_input: Dictionary) -> void:
+func send_node_state_to_client(\
+	peer_id: int,\
+	tick: int,\
+	node_path: String,\
+	node_state: Dictionary,\
+	input_peer_id: int,\
+	node_input: Dictionary,\
+	last_received_input_tick: int) -> void:
+	
 	var message := {}
 	message[message_serializer.StateKeys.TICK] = tick
 	message[message_serializer.StateKeys.INPUT_PEER_ID] = input_peer_id
 	message[message_serializer.StateKeys.NODE_PATH] = node_path
 	message[message_serializer.StateKeys.STATE] = message_serializer.serialize_state(node_state)
 	message[message_serializer.StateKeys.PLAYER_INPUT_DATA] = message_serializer.serialize_node_input(node_input)
+	message[message_serializer.StateKeys.LAST_INPUT_TICK_RECEIVED] = last_received_input_tick
 	
 	var message_data : PackedByteArray = message_serializer.serialize_state_message(message)
 	assert(message_data.size() != 0, "Error serializing state")
 	
-	print_debug("send_state_to_clients, message size: %d" %message_data.size())
+	#print_debug("send_state_to_clients, message size: %d" %message_data.size())
 	network_adaptor.send_state_update(peer_id, message_data)
 
 ## On Client. State update for a single node.
@@ -387,7 +478,7 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	
 	# we have the state for a single node here
 	var tick_state : TickState = get_tick_state(tick)
-	
+		
 	# the clients should always be ahead of the server, im pretty sure.
 	assert(tick_state != null, "Client recieved state update from future.")
 	
@@ -395,16 +486,26 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	var node_path : String = message[message_serializer.StateKeys.NODE_PATH]
 	assert(tick_state.entity_states.get(node_path) != null, "Received state for node that doesnt exist in local state_buffer")
 	
-	tick_state.entity_states[node_path] = message[message_serializer.StateKeys.STATE]
+	var entity_state : EntityState = tick_state.entity_states[node_path]
+	entity_state.state = message[message_serializer.StateKeys.STATE]
 	
+	# request a rollback if we just recieved a new state
+	if entity_state.is_true == false:
+		request_rollback(tick)
+		entity_state.is_true = true
+		
 	# update input buffer
 	var input_peer_id : int = message[message_serializer.StateKeys.INPUT_PEER_ID] 
 	var player_input := get_player_input(input_peer_id, tick)
 	player_input.input[node_path] = message[message_serializer.StateKeys.PLAYER_INPUT_DATA]
+	player_input.is_predicted = false
 	
-	# request a rollback if we just recieved a new state
-	# deserialize into game_state Dictionary and input_state Dictionary for this node
-
+	var new_input_confirmation : int = message[message_serializer.StateKeys.LAST_INPUT_TICK_RECEIVED]
+	if new_input_confirmation > last_confirmed_player_tick:
+		#print("CLIENT: input confirmation %d -> %d" % [last_confirmed_player_tick, new_input_confirmation])
+		last_confirmed_player_tick = new_input_confirmation
+		
+		
 ## On Client, used to send local player input for all nodes up to the server
 func send_input_to_server(serialized_input_ticks: Array[PackedByteArray], initial_tick : int, peer_id : int = 1) -> void:
 	var message := {}
@@ -414,7 +515,10 @@ func send_input_to_server(serialized_input_ticks: Array[PackedByteArray], initia
 	var message_bytes : PackedByteArray = message_serializer.serialize_input_message(message)
 	
 	# Debug
-	#print_debug("send_input_to_server, message size: %d" %message_bytes.size())
+	var tick_string : String = ""
+	for index in serialized_input_ticks.size():
+		tick_string = "%s, %d" % [tick_string, index + initial_tick]
+	#print("CLIENT: send_input_to_server, message size: %d, init tick %d, array size: %d : %s" % [message_bytes.size(), initial_tick, serialized_input_ticks.size(), tick_string])
 	network_adaptor.send_input_update(peer_id, message_bytes)
 
 ## On Server
@@ -426,18 +530,23 @@ func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) 
 	var last_tick : int = initial_tick + player_input_data.size()
 	
 	var player : Player = get_player(peer_id)
+	
+	#print("SERVER: Input Update: initial: %d, last: %d" % [initial_tick, last_tick])
 
 	# save the inputs to the state_buffer	
 	if last_tick > player.last_input_tick_recieved:
 		for input_index in player_input_data.size():
 			var input_tick := input_index + initial_tick
+			#print("SERVER: Tick Recieved: tick: %d" % [input_tick])
+			# update last_recieved_input_tick for this player.
+			if input_tick <= player.last_input_tick_recieved:
+				continue
+			
+			player.last_input_tick_recieved = input_tick
+			
 			var player_input : PlayerInput = get_or_add_player_input(peer_id, input_tick)
 			
 			var recieved_player_input := message_serializer.deserialize_player_input(player_input_data[input_index])
 			player_input.input = recieved_player_input
 			player_input.is_predicted = false
 			
-			## update last_recieved_input_tick for this player.
-			if input_tick > player.last_input_tick_recieved:
-				player.last_input_tick_recieved = input_tick
-				print_debug("New tick Recieved: id: %d, tick: %d" % [peer_id, input_tick])

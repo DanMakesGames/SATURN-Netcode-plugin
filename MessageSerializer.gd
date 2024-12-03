@@ -15,13 +15,16 @@ enum StateKeys {
 	INPUT_PEER_ID,
 	NODE_PATH,
 	STATE,
-	PLAYER_INPUT_DATA
+	PLAYER_INPUT_DATA,
+	LAST_INPUT_TICK_RECEIVED
 }
 
 func serialize_player_input(player_input: Dictionary) -> PackedByteArray:
 	return var_to_bytes(player_input)
 
 func deserialize_player_input(player_input_data: PackedByteArray) -> Dictionary:
+	if player_input_data.is_empty():
+		return {}
 	return bytes_to_var(player_input_data)
 	
 func serialize_node_input(node_input: Dictionary) -> PackedByteArray:
@@ -57,6 +60,7 @@ func serialize_state_message(message : Dictionary) -> PackedByteArray:
 	
 	var state : PackedByteArray = message.get(StateKeys.STATE)
 	assert(state != null, "State message has no state")
+	#print_debug("CLIENT: State Size: %d" % state.size())
 	buffer.put_u16(state.size())
 	buffer.put_data(state)
 	
@@ -64,6 +68,10 @@ func serialize_state_message(message : Dictionary) -> PackedByteArray:
 	assert(node_input != null, "state message has no input")
 	buffer.put_u16(node_input.size())
 	buffer.put_data(node_input)
+	
+	var last_input_tick_received : int = message.get(StateKeys.LAST_INPUT_TICK_RECEIVED, -1)
+	assert(last_input_tick_received >= 0, "State message doesnt have last received input tick")
+	buffer.put_u32(last_input_tick_received)
 	
 	buffer.resize(buffer.get_position())
 	return buffer.data_array
@@ -79,14 +87,21 @@ func deserialize_state_message(data: PackedByteArray) -> Dictionary:
 	
 	message[StateKeys.INPUT_PEER_ID] = buffer.get_u32()
 	
+	var node_path : String = buffer.get_string()
+	assert(node_path.is_empty() == false, "Recieved state with no node path")
+	message[StateKeys.NODE_PATH] = node_path
+	
 	var state_size := buffer.get_u16()
-	message[StateKeys.STATE] = deserialize_state(buffer.get_data(state_size))
+	var state_data_array : Array = buffer.get_data(state_size)
+	message[StateKeys.STATE] = deserialize_state(state_data_array[1])
 
 	var input_size := buffer.get_u16()
 	if input_size == 0:
 		message[StateKeys.PLAYER_INPUT_DATA] = PackedByteArray()
 	else:
-		message[StateKeys.PLAYER_INPUT_DATA] = deserialize_node_input(buffer.get_data(input_size))
+		message[StateKeys.PLAYER_INPUT_DATA] = deserialize_node_input(buffer.get_data(input_size)[1])
+	
+	message[StateKeys.LAST_INPUT_TICK_RECEIVED] = buffer.get_u32()
 	
 	return message
 
@@ -97,13 +112,12 @@ func serialize_input_message(message : Dictionary) -> PackedByteArray:
 	var tick : int = message.get(PlayerInputKeys.INITIAL_TICK,-1)
 	assert(tick != -1, "Input message has no tick element.")
 	buffer.put_u32(tick)
-		
-	## peer_id -> PackedByteArray
-	var player_input_ticks : Dictionary = message.get(PlayerInputKeys.PLAYER_INPUT_DATA)
+	
+	var player_input_ticks : Array[PackedByteArray] = message.get(PlayerInputKeys.PLAYER_INPUT_DATA)
 	assert(player_input_ticks != null, "Input message has not input element")
 	
 	buffer.put_u8(player_input_ticks.size())
-	
+
 	for player_input_tick : PackedByteArray in player_input_ticks:
 		buffer.put_u16(player_input_tick.size())
 		buffer.put_data(player_input_tick) 
@@ -123,11 +137,13 @@ func deserialize_input_message(data : PackedByteArray) -> Dictionary:
 	var player_input_data : Array[PackedByteArray] = []
 	
 	var player_input_count : int = buffer.get_u8()
+	
 	player_input_data.resize(player_input_count)
 	
 	for index in player_input_count:
 		var input_data_size : int = buffer.get_u16()
-		player_input_data.push_back(buffer.get_data(input_data_size))
+		var data_array := buffer.get_data(input_data_size)
+		player_input_data[index] = data_array[1]
 	
 	message[PlayerInputKeys.PLAYER_INPUT_DATA] = player_input_data
 	return message

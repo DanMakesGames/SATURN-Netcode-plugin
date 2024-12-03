@@ -13,7 +13,7 @@ func _get_local_input()->Dictionary:
 	
 	input["vertical"] = Input.get_axis("move_up", "move_down")
 	input["horizontal"] = Input.get_axis("move_left", "move_right")
-	
+	#print("%s (%f, %f)" % ["server" if multiplayer.is_server() else "client", input["horizontal"], input["vertical"]])
 	return input
 
 ## Network Plugin
@@ -40,8 +40,9 @@ func process_input(input : Dictionary, delta : float) -> void:
 func process_movement(delta_time : float) -> void:
 	var thrust_delta_velocity : Vector2 = Vector2(horizontal_input, vertical_input).normalized() * acceleration * delta_time
 	var drag_delta_velocity := (velocity * drag * delta_time) * -1.0 * velocity.normalized()
-	
+		
 	velocity = thrust_delta_velocity + drag_delta_velocity
+	#velocity = Vector2(1,0)
 	position += delta_time * velocity
 
 ## provides single player functionality
