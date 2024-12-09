@@ -6,7 +6,7 @@
 <ins>N</ins>etcode
 
 Plugin for godot implementing netcode.
-Inspired by GGPO to bring low latency accurate gameplay to players. This netcode library utilizes rollback and prediction to provide accurate low latency gameplay. Unlike fighting game rollback, it has a authoritative dedicated server.
+Inspired by GGPO to bring low latency accurate gameplay to players. This netcode library utilizes rollback and prediction to provide accurate low latency gameplay. Unlike fighting game rollback, it has an authoritative dedicated server.
 Very much still in progress.
 
 ### Features:
