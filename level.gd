@@ -10,3 +10,11 @@ func _ready() -> void:
 
 func start_game() -> void:
 	print("Start Game! %d" % multiplayer.get_unique_id())
+
+func _physics_process(delta: float) -> void:
+	if multiplayer.is_server()==false:
+		var player: NetcodeManager.Player = NetcodeManager.get_player(multiplayer.get_unique_id())
+		if player == null:
+			return
+		%RollbackFrames.text = "Rollback Frames: %d, ping: %d\n Last Confirmed Input %d delta %d\n Tick%d" \
+		% [NetcodeManager.get_rollback_frames(), player.ping, NetcodeManager.last_confirmed_player_tick, NetcodeManager.last_processed_tick - NetcodeManager.last_confirmed_player_tick, NetcodeManager.last_processed_tick]

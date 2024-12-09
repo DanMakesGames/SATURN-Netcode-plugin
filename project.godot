@@ -27,6 +27,11 @@ gdscript/warnings/unassigned_variable_op_assign=0
 gdscript/warnings/unused_variable=0
 gdscript/warnings/untyped_declaration=2
 
+[display]
+
+window/size/viewport_width=1000
+window/size/viewport_height=600
+
 [editor_plugins]
 
 enabled=PackedStringArray()

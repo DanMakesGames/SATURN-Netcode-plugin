@@ -53,6 +53,7 @@ func on_server_connected_failed() -> void:
 
 func connect_to_server(input_IP : String ) -> void:
 	initialize_client(input_IP)
+	NetcodeManager.add_player(multiplayer.get_unique_id())
 	
 func on_peer_connected(peer_id : int) -> void:
 	if multiplayer.is_server():

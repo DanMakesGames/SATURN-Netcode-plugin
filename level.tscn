@@ -1,10 +1,19 @@
-[gd_scene load_steps=3 format=3 uid="uid://cgocabgv0fd7x"]
+[gd_scene load_steps=4 format=3 uid="uid://cgocabgv0fd7x"]
 
 [ext_resource type="Script" path="res://level.gd" id="1_bvquu"]
 [ext_resource type="PackedScene" uid="uid://tesm0efvhgac" path="res://plane.tscn" id="2_2l1t8"]
+[ext_resource type="Texture2D" uid="uid://lkmnrt0epcw2" path="res://addons/kenney_prototype_textures/dark/texture_01.png" id="2_o7qnf"]
 
 [node name="Node2D" type="Node2D"]
 script = ExtResource("1_bvquu")
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+position = Vector2(489.764, 243.448)
+scale = Vector2(0.987231, 0.987231)
+texture = ExtResource("2_o7qnf")
+offset = Vector2(5.815, 0)
+region_enabled = true
+region_rect = Rect2(-4.27, -1, 1030.91, 1010.8)
 
 [node name="PlanePlayer1" parent="." instance=ExtResource("2_2l1t8")]
 unique_name_in_owner = true
@@ -13,3 +22,10 @@ position = Vector2(377, 313)
 [node name="PlanePlayer2" parent="." instance=ExtResource("2_2l1t8")]
 unique_name_in_owner = true
 position = Vector2(833, 310)
+
+[node name="RollbackFrames" type="Label" parent="."]
+unique_name_in_owner = true
+offset_left = 12.0
+offset_top = 14.0
+offset_right = 200.0
+offset_bottom = 49.0

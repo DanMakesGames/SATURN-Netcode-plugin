@@ -10,6 +10,10 @@ const SAVE_STATE_FUNCTION : String = "_save_state"
 const LOAD_STATE_FUNCTION : String = "_load_state"
 const GET_LOCAL_INPUT_FUNCTION : String = "_get_local_input"
 const NETWORK_PROCESS_FUNCTION : String = "_network_transform_process"
+const MAX_STATE_BUFFER_SIZE_SERVER : int = 1
+const MAX_INPUT_BUFFER_SIZE_SERVER : int = 500
+const MAX_BUFFER_SIZE_CLIENT : int = 500
+const MAX_PLAYER_INPUT_TICKS_PER_MESSAGE: int = 5
 
 # Variables
 var started : bool
@@ -33,8 +37,6 @@ var last_confirmed_player_tick : int = -1
 # used for updating var player_input_departure_buffer. DO NOT MANUALLY UPDATE
 var last_confirmed_player_tick_old : int = -1
 
-var max_player_input_ticks_per_message : int = 5
-
 var network_adaptor : NetworkAdaptor
 var message_serializer : MessageSerializer
 
@@ -45,6 +47,8 @@ var message_serializer : MessageSerializer
 ## Element Last: most recent player input tick
 var player_input_departure_buffer : Array[PackedByteArray]
 
+var debug_last_recieved_state_tick: int = -1
+var debug_ticks_since_last_process: int = 0
 # Signals
 signal game_started()
 signal game_stopped()
@@ -53,6 +57,7 @@ signal game_error()
 class Player extends Object:
 	var peer_id : int
 	var last_input_tick_recieved : int = -1
+	var ping: int = -1
 
 var players : Array[Player]
 
@@ -129,21 +134,25 @@ func get_tick_state(tick : int) -> TickState:
 		push_error("get_tick_state() called for future tick not yet saved. Last Saved Tick %d, Requested Tick %d" % [last_saved_tick, tick])
 		return null
 	
-	return state_buffer[-tick_delta - 1]
+	var state_index := -tick_delta - 1
+	assert(state_buffer[state_index].tick == tick, "get_tick_state returned wrong tick. Wanted %d, returned %d" % [tick, state_buffer[state_index].tick])
+	return state_buffer[state_index]
 
 func get_or_add_tick_state(tick : int) -> TickState:
 	var last_saved_tick : int = -1
-	if state_buffer.back() != null:
+	if state_buffer.is_empty() == false:
 		last_saved_tick = state_buffer.back().tick
 		
 	var tick_delta : int = tick - last_saved_tick
 	
 	# we need to add new ticks.
-	if tick_delta > 0:
+	if (last_saved_tick == -1) || (tick_delta > 0):
 		for new_tick in range(last_saved_tick + 1, tick + 1):
 			state_buffer.push_back(TickState.new(new_tick))
 		return state_buffer[-1]
 	else:
+		var state_index := tick_delta - 1
+		assert("get_or_add_tick_state returned wrong tick. Wanted %d, returned %d" % [tick, state_buffer[state_index].tick])
 		return state_buffer[tick_delta - 1]
 
 func get_or_add_player_input(peer_id: int, tick: int) -> PlayerInput:
@@ -199,6 +208,9 @@ func generate_and_save_input_prediction(tick: int, peer_id: int, node_path: Stri
 	
 	# save to input buffer
 	var player_input: PlayerInput = get_or_add_player_input(peer_id, tick)
+	if player_input.is_predicted == false:
+		return player_input.input
+	
 	player_input.input[node_path] = fresh_input_prediction
 	player_input.is_predicted = true
 	
@@ -208,11 +220,15 @@ func request_rollback(tick : int) -> void:
 	if (tick <= last_processed_tick) && ((tick < rollback_tick) || (rollback_tick == -1)):
 		rollback_tick = tick 
 
+func get_rollback_frames() -> int:
+	return last_processed_tick - debug_last_recieved_state_tick
+
 func _ready() -> void:
 	network_adaptor = NetworkAdaptor.new()
 	add_child(network_adaptor)
 	network_adaptor.recieve_input_update.connect(self.on_recieve_input_update)
 	network_adaptor.recieve_state_update.connect(self.on_recieve_node_state_update)
+	network_adaptor.recieve_ping_update.connect(self.on_recieve_ping_update)
 	
 	message_serializer = MessageSerializer.new()
 
@@ -231,48 +247,55 @@ func _physics_process(delta: float) -> void:
 	if not started:
 		return
 	
-	# STEP 1: PERFORM ANY ROLLBACKS, IF NECESSARY. Proccess newly recieved input (on the server), or newly recieved 
-	# Client Rollback (state rollback): Each frame load true state if it exits, or calculate predictated state if it does not.
+	# Cleanup state buffer. Retire state that it's unlikely we'll need to return to.
+	# Let's save the input buffer on the server so we can save it as a replay?
+	cleanup_state_buffer()
+	cleanup_input_buffer()
+	
 	if multiplayer.is_server() == false:
-		perform_rollback()
+		if perform_realtime_tick() == false:
+			get_tree().quit(1)
+	else:
+		if perform_server_realtime_tick() == false:
+			get_tree().quit(1)
+
+func perform_server_realtime_tick() -> bool:
+	# On the server, only process a frame once we have recieved input from everyone.
+	# TODO, in the future this changes once we have input buffer and upstream throttle.
+	
+	current_tick = last_processed_tick + 1
+	var has_received_input : bool = true
+	for peer_id : int in input_buffer:
+		var player_input := get_player_input(peer_id, current_tick)
+		if player_input == null || player_input.is_predicted == true:
+			has_received_input = false
+			break
+			
+	if has_received_input:
+		network_tick()
+
+		if not save_game_state(current_tick, true):
+			push_error("error saving game in server realtime tick")
+			return false
+		
+		last_processed_tick = last_processed_tick + 1
+		print("SERVER: TICK:%d %d " % [debug_ticks_since_last_process,last_processed_tick])
+		debug_ticks_since_last_process = 0
+	
+	
+	debug_ticks_since_last_process = debug_ticks_since_last_process + 1
+	send_state_to_all_clients()
+	return true
+	
+func perform_realtime_tick() -> bool:
+	network_adaptor.send_ping_request(1)
+	
+	# STEP 1: PERFORM ANY ROLLBACKS, IF NECESSARY. Proccess newly recieved input (on the server), or newly recieved 
+	perform_rollback()
 	
 	# STEP 2: Client, UPSTREAM THROTTLE. skip ticks to ensure that we have a decent buffer of client input. See Overwatch.
 	# TODO
 	
-	# TODO: Cleanup state buffer. Retire state that it's unlikely we'll need to return to.
-	# Let's save the input buffer on the server so we can save it as a replay?
-	
-	if multiplayer.is_server() == false:
-		perform_realtime_tick()
-	
-	# On the server, only process a frame once we have recieved input from everyone.
-	# TODO, in the future this changes once we have input buffer and upstream throttle.
-	if multiplayer.is_server():
-		current_tick = last_processed_tick + 1
-		var has_received_input : bool = true
-		for peer_id : int in input_buffer:
-			var player_input := get_player_input(peer_id, current_tick)
-			if player_input == null || player_input.is_predicted == true:
-				has_received_input = false
-				break
-				
-		if has_received_input:
-			network_tick()
-			# Save Game State
-			# create a new Tick State
-			if not save_game_state(current_tick, true):
-				push_error("error saving game in server realtime tick")
-				get_tree().quit(1)
-				return
-			
-			#print("SERVER: Processed tick: %d" % current_tick)
-			last_processed_tick = last_processed_tick + 1
-	
-	# Server: Send true state to all clients
-	if multiplayer.is_server():
-		send_state_to_all_clients()
-	
-func perform_realtime_tick() -> bool:
 	current_tick = last_processed_tick + 1
 	
 	# Cleanup departing player input buffer
@@ -301,8 +324,10 @@ func perform_realtime_tick() -> bool:
 	# recent tick (if possible based on message size). We want the redundancy of resending ticks so 
 	# theres a higher chance they get through and we dont have to wait on the last_confirmed_player_tick.
 	if multiplayer.is_server() == false:
-		var departing_player_input : Array[PackedByteArray] = get_departing_player_input()
+		var departing_player_input: Array[PackedByteArray] = get_departing_player_input()
 		send_input_to_server(departing_player_input, last_confirmed_player_tick + 1)
+		last_confirmed_player_tick = last_confirmed_player_tick + 1
+		#send_all_unconfirmed_input_to_server()
 	
 	# Step 4: Clients Do tick and save resulting state
 	# Perform Tick
@@ -326,7 +351,7 @@ func network_tick() -> void:
 		
 		# if we dont have any true input, then do a prediction.
 		var node_input: Dictionary
-		if player_input == null:
+		if player_input == null || player_input.is_predicted:
 			node_input = generate_and_save_input_prediction(current_tick, node.get_multiplayer_authority(), node.get_path())
 		else:
 			node_input = player_input.input.get(String(node.get_path()), {})
@@ -401,10 +426,10 @@ func gather_local_input() -> Dictionary:
 
 ## Grab the inputs from last confirmed player input tick to most recent tick.
 func get_departing_player_input() -> Array[PackedByteArray]:
-	var departing_player_input : Array[PackedByteArray] = player_input_departure_buffer.slice(0, max_player_input_ticks_per_message)
+	var departing_player_input : Array[PackedByteArray] = player_input_departure_buffer.slice(0, MAX_PLAYER_INPUT_TICKS_PER_MESSAGE)
 	return departing_player_input
 
-## Client Side.
+## Client Side: Each frame load true state if it exits, or calculate predictated state if it does not.
 func perform_rollback() -> bool:
 	if rollback_tick < 0:
 		return true
@@ -416,7 +441,10 @@ func perform_rollback() -> bool:
 		return false
 	
 	# loop and perform ticks.
-	for tick in range(rollback_tick, last_processed_tick + 1): 
+	# rollback tick is for the state we just recieved. The state is at the end of the tick frame. If we
+	# started at rollback_tick, we would double process the first tick  
+	var rollback_starting_tick: int = rollback_tick + 1
+	for tick in range(rollback_starting_tick, last_processed_tick + 1): 
 		current_tick = tick
 		network_tick()	
 
@@ -511,8 +539,21 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	if new_input_confirmation > last_confirmed_player_tick:
 		#print("CLIENT: input confirmation %d -> %d" % [last_confirmed_player_tick, new_input_confirmation])
 		last_confirmed_player_tick = new_input_confirmation
-		
-		
+	
+	if tick > debug_last_recieved_state_tick:
+		debug_last_recieved_state_tick = tick
+
+func send_all_unconfirmed_input_to_server() -> void:
+	var unconfirmed_input: Array[PackedByteArray] = player_input_departure_buffer.duplicate()
+	var interations: int = ceil(unconfirmed_input.size() / MAX_PLAYER_INPUT_TICKS_PER_MESSAGE)
+	#send_input_to_server(unconfirmed_input.slice(0, MAX_PLAYER_INPUT_TICKS_PER_MESSAGE), last_confirmed_player_tick + 1)
+	var debug_string: String = ""
+	for count in 5:
+		var start_index: int = count * MAX_PLAYER_INPUT_TICKS_PER_MESSAGE
+		debug_string = debug_string + ("[%d, %d], " % [start_index, start_index + MAX_PLAYER_INPUT_TICKS_PER_MESSAGE])
+		send_input_to_server(unconfirmed_input.slice(start_index, start_index + MAX_PLAYER_INPUT_TICKS_PER_MESSAGE), last_confirmed_player_tick + 1)
+	#print(debug_string)
+
 ## On Client, used to send local player input for all nodes up to the server
 func send_input_to_server(serialized_input_ticks: Array[PackedByteArray], initial_tick : int, peer_id : int = 1) -> void:
 	var message := {}
@@ -537,8 +578,6 @@ func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) 
 	var last_tick : int = initial_tick + player_input_data.size()
 	
 	var player : Player = get_player(peer_id)
-	
-	#print("SERVER: Input Update: initial: %d, last: %d" % [initial_tick, last_tick])
 
 	# save the inputs to the state_buffer	
 	if last_tick > player.last_input_tick_recieved:
@@ -557,3 +596,32 @@ func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) 
 			player_input.input = recieved_player_input
 			player_input.is_predicted = false
 			
+
+# client
+func cleanup_state_buffer() -> void:
+	# remove all state buffers older than the cut off.
+	var max_elements: int = MAX_STATE_BUFFER_SIZE_SERVER if multiplayer.is_server() else MAX_BUFFER_SIZE_CLIENT
+	var elements_to_remove: int = state_buffer.size() - max_elements
+	
+	if elements_to_remove <= 0:
+		return
+	
+	for count in elements_to_remove:
+		state_buffer.pop_front()
+
+func cleanup_input_buffer() -> void:
+	var max_elements: int = MAX_INPUT_BUFFER_SIZE_SERVER if multiplayer.is_server() else MAX_BUFFER_SIZE_CLIENT
+	
+	for peer_id: int in input_buffer:
+		var player_input_buffer : Array[PlayerInput] = input_buffer[peer_id]
+		var elements_to_remove: int = player_input_buffer.size() - max_elements
+		
+		if elements_to_remove <= 0:
+			return
+		
+		for count in elements_to_remove:
+			player_input_buffer.pop_front()
+			
+func on_recieve_ping_update(ping: int) -> void:
+	var player: Player = get_player(multiplayer.get_unique_id())
+	player.ping = ping
