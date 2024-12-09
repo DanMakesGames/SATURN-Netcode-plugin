@@ -9,6 +9,9 @@ Plugin for godot implementing netcode.
 Inspired by GGPO to bring low latency accurate gameplay to players. This netcode library utilizes rollback and prediction to provide accurate low latency gameplay. Unlike fighting game rollback, it has an authoritative dedicated server.
 Very much still in progress.
 
+### Video
+https://streamable.com/stl49b
+
 ### Features:
 * Athoritative Dedicated Server
 * Client-side rollback and prediction
