@@ -5,6 +5,7 @@
 <ins>U</ins>pstream
 <ins>N</ins>etcode
 
+Plugin for godot implementing netcode.
 Inspired by GGPO to bring low latency accurate gameplay to players. This netcode library utilizes rollback and prediction to provide accurate low latency gameplay. Unlike GGPO, and it has a authoritative dedicated server.
 Very much still in progress.
 
