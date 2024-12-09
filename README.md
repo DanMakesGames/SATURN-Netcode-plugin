@@ -12,6 +12,10 @@ Very much still in progress.
 ### Video
 https://streamable.com/stl49b
 
+### Notable Files
+* [NetcodeManager.gd](NetcodeManager.gd): Singleton implementing the netcode. In the future I'd like to break this up into a class responsible for saving/loading state.
+* [plane.gd](plane.gd): Example of an entity that is using this netcode.
+
 ### Features:
 * Athoritative Dedicated Server
 * Client-side rollback and prediction
