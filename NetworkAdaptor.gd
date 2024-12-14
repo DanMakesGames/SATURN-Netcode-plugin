@@ -1,5 +1,7 @@
 extends Node
 
+const DELAY_TIME: float = 0.05
+
 signal recieve_input_update(sender_peer_id: int, message: PackedByteArray)
 signal recieve_state_update(message: PackedByteArray)
 signal recieve_ping_update(ping:int)
@@ -16,13 +18,17 @@ func _ready() -> void:
 func send_ping_request(peer_id: int) -> void:
 	if ping_timeout_timer.is_stopped() == false:
 		return
-	
+
 	ping_start_time = Time.get_ticks_msec()
 	ping_timeout_timer.start()
-		
+	
+	if DELAY_TIME > 0:
+		await get_tree().create_timer(DELAY_TIME, true, true).timeout
 	recieve_ping_request.rpc_id(peer_id)
 
 func send_ping_response(peer_id: int) -> void:
+	if DELAY_TIME > 0:
+		await get_tree().create_timer(DELAY_TIME, true, true).timeout
 	recieve_ping_response.rpc_id(peer_id)
 	
 @rpc("any_peer", "unreliable")
@@ -47,9 +53,13 @@ func ping_timeout() -> void:
 	ping_start_time = -1
 	
 func send_input_update(peer_id : int, message: PackedByteArray) -> void:
+	if DELAY_TIME > 0:
+		await get_tree().create_timer(DELAY_TIME, true, true).timeout
 	riu.rpc_id(peer_id, message)
 
 func send_state_update(peer_id : int, message : PackedByteArray) -> void:
+	if DELAY_TIME > 0:
+		await get_tree().create_timer(DELAY_TIME, true, true).timeout
 	rsu.rpc_id(peer_id, message)
 
 @rpc("any_peer", "call_local", "unreliable")
