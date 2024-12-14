@@ -33,9 +33,9 @@ var rollback_tick : int = -1
 var is_rollback : bool = false
 
 ## this is the last player input tick that the server confirmed to us it recieved.
-var last_confirmed_player_tick : int = -1
+var last_unconfirmed_player_tick : int = 0
 # used for updating var player_input_departure_buffer. DO NOT MANUALLY UPDATE
-var last_confirmed_player_tick_old : int = -1
+var last_unconfirmed_player_tick_old : int = 0
 
 var network_adaptor : NetworkAdaptor
 var message_serializer : MessageSerializer
@@ -43,7 +43,7 @@ var message_serializer : MessageSerializer
 ## Array of serialized player input that needs to be sent off to the server. Shrinks as we
 ## get confirmations from the server that it recieved our input. A client input tick must eventually
 ## arrive.
-## Element 0: player_input for tick last_confirmed_player_tick + 1
+## Element 0: player_input for tick last_unconfirmed_player_tick
 ## Element Last: most recent player input tick
 var player_input_departure_buffer : Array[PackedByteArray]
 
@@ -128,6 +128,8 @@ func get_player(peer_id : int) -> Player:
 	return null
 
 func get_tick_state(tick : int) -> TickState:
+	if state_buffer.is_empty():
+		return null
 	var last_saved_tick : int = state_buffer.back().tick
 	var tick_delta : int = last_saved_tick - tick
 	if tick_delta < 0:
@@ -246,7 +248,6 @@ func client_game_start() -> void:
 func _physics_process(delta: float) -> void:
 	if not started:
 		return
-	
 	# Cleanup state buffer. Retire state that it's unlikely we'll need to return to.
 	# Let's save the input buffer on the server so we can save it as a replay?
 	cleanup_state_buffer()
@@ -263,25 +264,25 @@ func perform_server_realtime_tick() -> bool:
 	# On the server, only process a frame once we have recieved input from everyone.
 	# TODO, in the future this changes once we have input buffer and upstream throttle.
 	
-	current_tick = last_processed_tick + 1
-	var has_received_input : bool = true
-	for peer_id : int in input_buffer:
-		var player_input := get_player_input(peer_id, current_tick)
-		if player_input == null || player_input.is_predicted == true:
-			has_received_input = false
-			break
-			
-	if has_received_input:
-		network_tick()
-
-		if not save_game_state(current_tick, true):
-			push_error("error saving game in server realtime tick")
-			return false
-		
-		last_processed_tick = last_processed_tick + 1
-		print("SERVER: TICK:%d %d " % [debug_ticks_since_last_process,last_processed_tick])
-		debug_ticks_since_last_process = 0
+	for attempt in 5:
+		current_tick = last_processed_tick + 1
+		var has_received_input : bool = true
+		for player in players:
+			var player_input := get_player_input(player.peer_id, current_tick)
+			if player_input == null || player_input.is_predicted == true:
+				has_received_input = false
+				break
+				
+		if has_received_input:
+			network_tick()
 	
+			if not save_game_state(current_tick, true):
+				push_error("error saving game in server realtime tick")
+				return false
+			
+			last_processed_tick = last_processed_tick + 1
+			print("SERVER: TICK:%d %d " % [debug_ticks_since_last_process,last_processed_tick])
+			debug_ticks_since_last_process = 0
 	
 	debug_ticks_since_last_process = debug_ticks_since_last_process + 1
 	send_state_to_all_clients()
@@ -300,10 +301,13 @@ func perform_realtime_tick() -> bool:
 	
 	# Cleanup departing player input buffer
 	if multiplayer.is_server() == false:
-		if last_confirmed_player_tick != last_confirmed_player_tick_old:
-			var delta_tick : int = last_confirmed_player_tick - last_confirmed_player_tick_old
-			player_input_departure_buffer = player_input_departure_buffer.slice(delta_tick)
-			last_confirmed_player_tick_old = last_confirmed_player_tick
+		if last_unconfirmed_player_tick > last_unconfirmed_player_tick_old:
+			var delta_tick : int = last_unconfirmed_player_tick - last_unconfirmed_player_tick_old
+			
+			for count in delta_tick:
+				player_input_departure_buffer.pop_front()
+				
+			last_unconfirmed_player_tick_old = last_unconfirmed_player_tick
 	
 	# STEP 3: GATHER INPUT
 	# create a new state for this tick
@@ -320,14 +324,11 @@ func perform_realtime_tick() -> bool:
 		add_outbound_player_input(local_input)
 	
 	# Client: Send input to server
-	# We want the grab all the input from the last_confirmed_player_tick to the most 
+	# We want the grab all the input from the last_unconfirmed_player_tick to the most 
 	# recent tick (if possible based on message size). We want the redundancy of resending ticks so 
 	# theres a higher chance they get through and we dont have to wait on the last_confirmed_player_tick.
 	if multiplayer.is_server() == false:
-		var departing_player_input: Array[PackedByteArray] = get_departing_player_input()
-		send_input_to_server(departing_player_input, last_confirmed_player_tick + 1)
-		last_confirmed_player_tick = last_confirmed_player_tick + 1
-		#send_all_unconfirmed_input_to_server()
+		send_all_unconfirmed_input_to_server()
 	
 	# Step 4: Clients Do tick and save resulting state
 	# Perform Tick
@@ -347,14 +348,17 @@ func network_tick() -> void:
 	# Call on this node grabbing either from entity state or the input state, neutral
 	var nodes : Array[Node] = get_tree().get_nodes_in_group(NETWORK_ENTITY_GROUP)
 	for node in nodes:
-		var player_input : PlayerInput = get_player_input(node.get_multiplayer_authority(), current_tick)
-		
-		# if we dont have any true input, then do a prediction.
+		var player : Player = get_player(node.get_multiplayer_authority())
 		var node_input: Dictionary
-		if player_input == null || player_input.is_predicted:
-			node_input = generate_and_save_input_prediction(current_tick, node.get_multiplayer_authority(), node.get_path())
-		else:
-			node_input = player_input.input.get(String(node.get_path()), {})
+		if player != null:
+			var player_input : PlayerInput = get_player_input(node.get_multiplayer_authority(), current_tick)
+			
+			# if we dont have any true input, then do a prediction.
+			
+			if player_input == null || player_input.is_predicted:
+				node_input = generate_and_save_input_prediction(current_tick, node.get_multiplayer_authority(), node.get_path())
+			else:
+				node_input = player_input.input.get(String(node.get_path()), {})
 		
 		if node.has_method(NETWORK_PROCESS_FUNCTION):
 			node.call(NETWORK_PROCESS_FUNCTION, node_input)
@@ -460,7 +464,8 @@ func perform_rollback() -> bool:
 func send_state_to_all_clients() -> void:
 	# first get the last processed tick
 	var latest_state := get_tick_state(last_processed_tick)
-	assert(latest_state != null, "Latest processed state is null")
+	if latest_state == null:
+		return
 	
 	for node_path : String in latest_state.entity_states:
 		var authority_peer_id : int = get_node(node_path).get_multiplayer_authority()
@@ -476,7 +481,18 @@ func send_state_to_all_clients() -> void:
 		for player in players:
 			if player.last_input_tick_recieved == -1:
 				continue
-			send_node_state_to_client(player.peer_id, last_processed_tick, node_path, node_state, authority_peer_id, player_input_for_node, player.last_input_tick_recieved)
+			
+			var player_input_buffer: Array[PlayerInput] = input_buffer[player.peer_id]
+			var oldest_unrecieved_input_tick: int = last_processed_tick + 1
+			for index in player_input_buffer.size():
+				var player_input: PlayerInput = get_player_input(player.peer_id, oldest_unrecieved_input_tick)
+				if player_input == null:
+					break
+				elif player_input.is_predicted == false:
+					oldest_unrecieved_input_tick = 1 + oldest_unrecieved_input_tick
+			
+			print("SERVER: %d oldest_unconfirmed: %d" % [last_processed_tick, oldest_unrecieved_input_tick])
+			send_node_state_to_client(player.peer_id, last_processed_tick, node_path, node_state, authority_peer_id, player_input_for_node, oldest_unrecieved_input_tick)
 
 ## On Server
 func send_node_state_to_client(\
@@ -536,23 +552,27 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	player_input.is_predicted = false
 	
 	var new_input_confirmation : int = message[message_serializer.StateKeys.LAST_INPUT_TICK_RECEIVED]
-	if new_input_confirmation > last_confirmed_player_tick:
-		#print("CLIENT: input confirmation %d -> %d" % [last_confirmed_player_tick, new_input_confirmation])
-		last_confirmed_player_tick = new_input_confirmation
+	if new_input_confirmation > last_unconfirmed_player_tick:
+		print("CLIENT %d: input confirmation %d -> %d" % [multiplayer.get_unique_id(), last_unconfirmed_player_tick, new_input_confirmation])
+		last_unconfirmed_player_tick = new_input_confirmation
 	
 	if tick > debug_last_recieved_state_tick:
 		debug_last_recieved_state_tick = tick
 
 func send_all_unconfirmed_input_to_server() -> void:
 	var unconfirmed_input: Array[PackedByteArray] = player_input_departure_buffer.duplicate()
-	var interations: int = ceil(unconfirmed_input.size() / MAX_PLAYER_INPUT_TICKS_PER_MESSAGE)
-	#send_input_to_server(unconfirmed_input.slice(0, MAX_PLAYER_INPUT_TICKS_PER_MESSAGE), last_confirmed_player_tick + 1)
-	var debug_string: String = ""
-	for count in 5:
+
+	var messages_to_send: int = ceili(float(unconfirmed_input.size()) / float(MAX_PLAYER_INPUT_TICKS_PER_MESSAGE))
+	var debug_string: String = "CLIENT %d: Send Tick %d, Last %d Buffer Size: %d" % [multiplayer.get_unique_id(), current_tick, current_tick - unconfirmed_input.size(), unconfirmed_input.size()]
+	
+	for count in messages_to_send:
 		var start_index: int = count * MAX_PLAYER_INPUT_TICKS_PER_MESSAGE
-		debug_string = debug_string + ("[%d, %d], " % [start_index, start_index + MAX_PLAYER_INPUT_TICKS_PER_MESSAGE])
-		send_input_to_server(unconfirmed_input.slice(start_index, start_index + MAX_PLAYER_INPUT_TICKS_PER_MESSAGE), last_confirmed_player_tick + 1)
-	#print(debug_string)
+		var end_index: int = (count + 1) * MAX_PLAYER_INPUT_TICKS_PER_MESSAGE
+		var initial_tick: int = last_unconfirmed_player_tick + (count * MAX_PLAYER_INPUT_TICKS_PER_MESSAGE)
+		#debug_string = debug_string + ("[%d, %d], " % [start_index, start_index + MAX_PLAYER_INPUT_TICKS_PER_MESSAGE])
+		send_input_to_server(unconfirmed_input.slice(start_index, end_index), initial_tick)
+	
+	print(debug_string)
 
 ## On Client, used to send local player input for all nodes up to the server
 func send_input_to_server(serialized_input_ticks: Array[PackedByteArray], initial_tick : int, peer_id : int = 1) -> void:
@@ -580,22 +600,21 @@ func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) 
 	var player : Player = get_player(peer_id)
 
 	# save the inputs to the state_buffer	
-	if last_tick > player.last_input_tick_recieved:
-		for input_index in player_input_data.size():
-			var input_tick := input_index + initial_tick
-			#print("SERVER: Tick Recieved: tick: %d" % [input_tick])
-			# update last_recieved_input_tick for this player.
-			if input_tick <= player.last_input_tick_recieved:
-				continue
-			
+	#if last_tick > player.last_input_tick_recieved:
+	for input_index in player_input_data.size():
+		var input_tick := input_index + initial_tick
+		
+		# update last_recieved_input_tick for this player.
+		if input_tick > player.last_input_tick_recieved:
 			player.last_input_tick_recieved = input_tick
+		
+		var player_input : PlayerInput = get_or_add_player_input(peer_id, input_tick)
 			
-			var player_input : PlayerInput = get_or_add_player_input(peer_id, input_tick)
-			
-			var recieved_player_input := message_serializer.deserialize_player_input(player_input_data[input_index])
-			player_input.input = recieved_player_input
-			player_input.is_predicted = false
-			
+		var recieved_player_input := message_serializer.deserialize_player_input(player_input_data[input_index])
+		player_input.input = recieved_player_input
+		player_input.is_predicted = false
+	
+	#print("SERVER: %d Last Tick: %d" % [player.peer_id, player.last_input_tick_recieved])			
 
 # client
 func cleanup_state_buffer() -> void:

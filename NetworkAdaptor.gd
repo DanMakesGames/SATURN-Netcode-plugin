@@ -1,6 +1,6 @@
 extends Node
 
-const DELAY_TIME: float = 0.05
+const DELAY_TIME: float = 0.14
 
 signal recieve_input_update(sender_peer_id: int, message: PackedByteArray)
 signal recieve_state_update(message: PackedByteArray)
