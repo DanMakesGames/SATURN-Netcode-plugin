@@ -130,6 +130,7 @@ func get_player(peer_id : int) -> Player:
 func get_tick_state(tick : int) -> TickState:
 	if state_buffer.is_empty():
 		return null
+		
 	var last_saved_tick : int = state_buffer.back().tick
 	var tick_delta : int = last_saved_tick - tick
 	if tick_delta < 0:
@@ -137,6 +138,11 @@ func get_tick_state(tick : int) -> TickState:
 		return null
 	
 	var state_index := -tick_delta - 1
+
+	# possible when maybe recieving a really really old tick packet and we already cleaned it up from the buffer.
+	if abs(state_index) > state_buffer.size():
+		return null
+	
 	assert(state_buffer[state_index].tick == tick, "get_tick_state returned wrong tick. Wanted %d, returned %d" % [tick, state_buffer[state_index].tick])
 	return state_buffer[state_index]
 
@@ -526,13 +532,14 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	assert(message.is_empty() != true, "Deserialization issue.")
 	
 	var tick : int = message[message_serializer.StateKeys.TICK]
+	# the clients should always be ahead of the server, im pretty sure.
+	assert(tick <= last_processed_tick, "Client recieved state update from future.")
 	
 	# we have the state for a single node here
 	var tick_state : TickState = get_tick_state(tick)
-		
-	# the clients should always be ahead of the server, im pretty sure.
-	assert(tick_state != null, "Client recieved state update from future.")
-	
+	if tick_state == null:
+		return
+
 	# update state buffer
 	var node_path : String = message[message_serializer.StateKeys.NODE_PATH]
 	assert(tick_state.entity_states.get(node_path) != null, "Received state for node that doesnt exist in local state_buffer")

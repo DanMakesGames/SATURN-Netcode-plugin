@@ -1,6 +1,7 @@
 extends Node
 
-const DELAY_TIME: float = 0.14
+const DELAY_TIME: float = 0.02
+const PACKET_LOSS: float = 0.01
 
 signal recieve_input_update(sender_peer_id: int, message: PackedByteArray)
 signal recieve_state_update(message: PackedByteArray)
@@ -55,11 +56,19 @@ func ping_timeout() -> void:
 func send_input_update(peer_id : int, message: PackedByteArray) -> void:
 	if DELAY_TIME > 0:
 		await get_tree().create_timer(DELAY_TIME, true, true).timeout
+	if PACKET_LOSS > 0:
+		var rand_value := randf()
+		if rand_value <= PACKET_LOSS:
+			return
 	riu.rpc_id(peer_id, message)
 
 func send_state_update(peer_id : int, message : PackedByteArray) -> void:
 	if DELAY_TIME > 0:
 		await get_tree().create_timer(DELAY_TIME, true, true).timeout
+	if PACKET_LOSS > 0:
+		var rand_value := randf()
+		if rand_value <= PACKET_LOSS:
+			return
 	rsu.rpc_id(peer_id, message)
 
 @rpc("any_peer", "call_local", "unreliable")
