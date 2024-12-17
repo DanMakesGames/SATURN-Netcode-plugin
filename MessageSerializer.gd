@@ -16,7 +16,8 @@ enum StateKeys {
 	NODE_PATH,
 	STATE,
 	PLAYER_INPUT_DATA,
-	LAST_INPUT_TICK_RECEIVED
+	OLDEST_INPUT_TICK_UNRECIEVED,
+	THROTTLE_COMMAND
 }
 
 func serialize_player_input(player_input: Dictionary) -> PackedByteArray:
@@ -69,9 +70,12 @@ func serialize_state_message(message : Dictionary) -> PackedByteArray:
 	buffer.put_u16(node_input.size())
 	buffer.put_data(node_input)
 	
-	var last_input_tick_received : int = message.get(StateKeys.LAST_INPUT_TICK_RECEIVED, -1)
+	var last_input_tick_received : int = message.get(StateKeys.OLDEST_INPUT_TICK_UNRECIEVED, -1)
 	assert(last_input_tick_received >= 0, "State message doesnt have last received input tick")
 	buffer.put_u32(last_input_tick_received)
+	
+	var throttle_command: int = message.get(StateKeys.THROTTLE_COMMAND, 0)
+	buffer.put_8(throttle_command)
 	
 	buffer.resize(buffer.get_position())
 	return buffer.data_array
@@ -101,7 +105,9 @@ func deserialize_state_message(data: PackedByteArray) -> Dictionary:
 	else:
 		message[StateKeys.PLAYER_INPUT_DATA] = deserialize_node_input(buffer.get_data(input_size)[1])
 	
-	message[StateKeys.LAST_INPUT_TICK_RECEIVED] = buffer.get_u32()
+	message[StateKeys.OLDEST_INPUT_TICK_UNRECIEVED] = buffer.get_u32()
+	
+	message[StateKeys.THROTTLE_COMMAND] = buffer.get_8()
 	
 	return message
 

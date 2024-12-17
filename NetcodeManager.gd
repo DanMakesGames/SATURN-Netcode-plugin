@@ -49,6 +49,14 @@ var player_input_departure_buffer : Array[PackedByteArray]
 
 var debug_last_recieved_state_tick: int = -1
 var debug_ticks_since_last_process: int = 0
+
+var tick_throttle: int = 0
+
+var minimum_target_input_buffer_size: int = 2
+var maximum_target_input_buffer_size: int = 7
+
+var wait_for_all_player_input: bool = false
+
 # Signals
 signal game_started()
 signal game_stopped()
@@ -56,8 +64,25 @@ signal game_error()
 
 class Player extends Object:
 	var peer_id : int
-	var last_input_tick_recieved : int = -1
 	var ping: int = -1
+	var packet_reception_history: int
+	var packet_history_length: int = 100
+	var tick_throttle: int = 0
+	
+	var debug_buffer_total: int = 0
+	
+	func _init() -> void:
+		packet_reception_history = packet_history_length
+	
+	func packet_recieved() -> void:
+		packet_reception_history += 1
+		packet_reception_history = clampi(packet_reception_history, -100, 100)
+	
+	func update_packet_reception_history() -> void:
+		packet_reception_history -= 1
+	
+	func get_packet_loss() -> float:
+		return (packet_history_length - packet_reception_history) / packet_history_length
 
 var players : Array[Player]
 
@@ -186,6 +211,7 @@ func get_or_add_player_input(peer_id: int, tick: int) -> PlayerInput:
 	assert(false, "Error get_or_add_player_input()")
 	return null
 
+## TODO This is really non-performant. Enforce index to tick ratio just like state?
 func get_player_input(peer_id: int, tick: int) -> PlayerInput:
 	var default_array : Array[PlayerInput] = []
 	var player_input_buffer : Array[PlayerInput] = input_buffer.get(peer_id, default_array)
@@ -231,6 +257,24 @@ func request_rollback(tick : int) -> void:
 func get_rollback_frames() -> int:
 	return last_processed_tick - debug_last_recieved_state_tick
 
+## calculated current buffer size for this player for throttling purposes.
+func get_player_input_buffer_size(peer_id: int) -> int:
+	if input_buffer.has(peer_id) == false:
+		return 0
+	
+	var player_input_buffer: Array[PlayerInput] = input_buffer[peer_id]
+	
+	# starting at the last processed tick, count forward
+	var true_input_count: int = 0
+	for index in player_input_buffer.size():
+		var player_input: PlayerInput = player_input_buffer[index]
+		if player_input.tick > last_processed_tick && player_input.is_predicted == false:
+			true_input_count += 1 
+	
+	# Because we send redundant input messages, player should hypothetically only be missing the very most recent input.
+	return true_input_count
+		
+
 func _ready() -> void:
 	network_adaptor = NetworkAdaptor.new()
 	add_child(network_adaptor)
@@ -254,6 +298,9 @@ func client_game_start() -> void:
 func _physics_process(delta: float) -> void:
 	if not started:
 		return
+	
+	if multiplayer.is_server() == false:
+		print ("Delta %f throttle %d" % [delta,tick_throttle])
 	# Cleanup state buffer. Retire state that it's unlikely we'll need to return to.
 	# Let's save the input buffer on the server so we can save it as a replay?
 	cleanup_state_buffer()
@@ -267,41 +314,61 @@ func _physics_process(delta: float) -> void:
 			get_tree().quit(1)
 
 func perform_server_realtime_tick() -> bool:
-	# On the server, only process a frame once we have recieved input from everyone.
-	# TODO, in the future this changes once we have input buffer and upstream throttle.
+	if started == false:
+		return true
 	
-	for attempt in 5:
-		current_tick = last_processed_tick + 1
-		var has_received_input : bool = true
+	current_tick = last_processed_tick + 1
+	
+	# update throttling
+	for player in players:
+		player.update_packet_reception_history()
+		var player_input_buffer_size: int = get_player_input_buffer_size(player.peer_id)
+		player.debug_buffer_total += player_input_buffer_size
+		var average_buffer_size:float = player.debug_buffer_total / (current_tick + 1)
+		print("Server: Ave Buffer: %f" % average_buffer_size)
+		if player_input_buffer_size < 3:
+			player.tick_throttle = 1
+		else:
+			player.tick_throttle = 0
+	
+	var should_tick: bool = true
+	
+	# Old: Before the input buffer and throttling, I used to wait for all inputs from all players before ticking.
+	if wait_for_all_player_input:
 		for player in players:
 			var player_input := get_player_input(player.peer_id, current_tick)
 			if player_input == null || player_input.is_predicted == true:
-				has_received_input = false
+				should_tick = false
 				break
-				
-		if has_received_input:
-			network_tick()
-	
-			if not save_game_state(current_tick, true):
-				push_error("error saving game in server realtime tick")
-				return false
 			
-			last_processed_tick = last_processed_tick + 1
-			print("SERVER: TICK:%d %d " % [debug_ticks_since_last_process,last_processed_tick])
-			debug_ticks_since_last_process = 0
+	if should_tick:
+		network_tick()
+
+		if not save_game_state(current_tick, true):
+			push_error("error saving game in server realtime tick")
+			return false
+		
+		last_processed_tick = last_processed_tick + 1
+		#print("SERVER: TICK:%d %d " % [debug_ticks_since_last_process,last_processed_tick])
+		debug_ticks_since_last_process = 0
 	
 	debug_ticks_since_last_process = debug_ticks_since_last_process + 1
 	send_state_to_all_clients()
 	return true
 	
 func perform_realtime_tick() -> bool:
+	if started == false:
+		return true
+		
 	network_adaptor.send_ping_request(1)
 	
-	# STEP 1: PERFORM ANY ROLLBACKS, IF NECESSARY. Proccess newly recieved input (on the server), or newly recieved 
 	perform_rollback()
 	
-	# STEP 2: Client, UPSTREAM THROTTLE. skip ticks to ensure that we have a decent buffer of client input. See Overwatch.
-	# TODO
+	# UPSTREAM THROTTLE. Modulate time to increase or decrease input sent to server. See Overwatch.
+	if tick_throttle > 0:
+		Engine.physics_ticks_per_second = 120
+	else:
+		Engine.physics_ticks_per_second = 60
 	
 	current_tick = last_processed_tick + 1
 	
@@ -363,6 +430,8 @@ func network_tick() -> void:
 			
 			if player_input == null || player_input.is_predicted:
 				node_input = generate_and_save_input_prediction(current_tick, node.get_multiplayer_authority(), node.get_path())
+				if multiplayer.is_server():
+					print("Server: STARVATION %d" % get_player_input_buffer_size(player.peer_id))
 			else:
 				node_input = player_input.input.get(String(node.get_path()), {})
 		
@@ -485,9 +554,9 @@ func send_state_to_all_clients() -> void:
 		var node_state : Dictionary = latest_state.entity_states[node_path].state
 		
 		for player in players:
-			if player.last_input_tick_recieved == -1:
-				continue
-			
+			if input_buffer.has(player.peer_id) == false:
+				break
+				
 			var player_input_buffer: Array[PlayerInput] = input_buffer[player.peer_id]
 			var oldest_unrecieved_input_tick: int = last_processed_tick + 1
 			for index in player_input_buffer.size():
@@ -497,8 +566,8 @@ func send_state_to_all_clients() -> void:
 				elif player_input.is_predicted == false:
 					oldest_unrecieved_input_tick = 1 + oldest_unrecieved_input_tick
 			
-			print("SERVER: %d oldest_unconfirmed: %d" % [last_processed_tick, oldest_unrecieved_input_tick])
-			send_node_state_to_client(player.peer_id, last_processed_tick, node_path, node_state, authority_peer_id, player_input_for_node, oldest_unrecieved_input_tick)
+			#print("SERVER: %d oldest_unconfirmed: %d" % [last_processed_tick, oldest_unrecieved_input_tick])
+			send_node_state_to_client(player.peer_id, last_processed_tick, node_path, node_state, authority_peer_id, player_input_for_node, oldest_unrecieved_input_tick, player.tick_throttle)
 
 ## On Server
 func send_node_state_to_client(\
@@ -508,7 +577,8 @@ func send_node_state_to_client(\
 	node_state: Dictionary,\
 	input_peer_id: int,\
 	node_input: Dictionary,\
-	last_received_input_tick: int) -> void:
+	oldest_unrecieved_input_tick: int,\
+	throttle_command: int) -> void:
 	
 	var message := {}
 	message[message_serializer.StateKeys.TICK] = tick
@@ -516,12 +586,12 @@ func send_node_state_to_client(\
 	message[message_serializer.StateKeys.NODE_PATH] = node_path
 	message[message_serializer.StateKeys.STATE] = message_serializer.serialize_state(node_state)
 	message[message_serializer.StateKeys.PLAYER_INPUT_DATA] = message_serializer.serialize_node_input(node_input)
-	message[message_serializer.StateKeys.LAST_INPUT_TICK_RECEIVED] = last_received_input_tick
+	message[message_serializer.StateKeys.OLDEST_INPUT_TICK_UNRECIEVED] = oldest_unrecieved_input_tick
+	message[message_serializer.StateKeys.THROTTLE_COMMAND] = throttle_command
 	
 	var message_data : PackedByteArray = message_serializer.serialize_state_message(message)
 	assert(message_data.size() != 0, "Error serializing state")
 	
-	#print_debug("send_state_to_clients, message size: %d" %message_data.size())
 	network_adaptor.send_state_update(peer_id, message_data)
 
 ## On Client. State update for a single node.
@@ -533,7 +603,7 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	
 	var tick : int = message[message_serializer.StateKeys.TICK]
 	# the clients should always be ahead of the server, im pretty sure.
-	assert(tick <= last_processed_tick, "Client recieved state update from future.")
+	#assert(tick <= last_processed_tick, "Client recieved state update from future.")
 	
 	# we have the state for a single node here
 	var tick_state : TickState = get_tick_state(tick)
@@ -558,10 +628,12 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	player_input.input[node_path] = message[message_serializer.StateKeys.PLAYER_INPUT_DATA]
 	player_input.is_predicted = false
 	
-	var new_input_confirmation : int = message[message_serializer.StateKeys.LAST_INPUT_TICK_RECEIVED]
-	if new_input_confirmation > last_unconfirmed_player_tick:
-		print("CLIENT %d: input confirmation %d -> %d" % [multiplayer.get_unique_id(), last_unconfirmed_player_tick, new_input_confirmation])
-		last_unconfirmed_player_tick = new_input_confirmation
+	var new_input_unrecieved : int = message[message_serializer.StateKeys.OLDEST_INPUT_TICK_UNRECIEVED]
+	if new_input_unrecieved > last_unconfirmed_player_tick:
+		#print("CLIENT %d: input confirmation %d -> %d" % [multiplayer.get_unique_id(), last_unconfirmed_player_tick, new_input_unrecieved])
+		last_unconfirmed_player_tick = new_input_unrecieved
+	
+	tick_throttle = message[message_serializer.StateKeys.THROTTLE_COMMAND]
 	
 	if tick > debug_last_recieved_state_tick:
 		debug_last_recieved_state_tick = tick
@@ -579,7 +651,7 @@ func send_all_unconfirmed_input_to_server() -> void:
 		#debug_string = debug_string + ("[%d, %d], " % [start_index, start_index + MAX_PLAYER_INPUT_TICKS_PER_MESSAGE])
 		send_input_to_server(unconfirmed_input.slice(start_index, end_index), initial_tick)
 	
-	print(debug_string)
+	#print(debug_string)
 
 ## On Client, used to send local player input for all nodes up to the server
 func send_input_to_server(serialized_input_ticks: Array[PackedByteArray], initial_tick : int, peer_id : int = 1) -> void:
@@ -605,15 +677,12 @@ func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) 
 	var last_tick : int = initial_tick + player_input_data.size()
 	
 	var player : Player = get_player(peer_id)
-
+	
+	
 	# save the inputs to the state_buffer	
 	#if last_tick > player.last_input_tick_recieved:
 	for input_index in player_input_data.size():
 		var input_tick := input_index + initial_tick
-		
-		# update last_recieved_input_tick for this player.
-		if input_tick > player.last_input_tick_recieved:
-			player.last_input_tick_recieved = input_tick
 		
 		var player_input : PlayerInput = get_or_add_player_input(peer_id, input_tick)
 			
@@ -621,7 +690,7 @@ func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) 
 		player_input.input = recieved_player_input
 		player_input.is_predicted = false
 	
-	#print("SERVER: %d Last Tick: %d" % [player.peer_id, player.last_input_tick_recieved])			
+	player.packet_recieved()
 
 # client
 func cleanup_state_buffer() -> void:

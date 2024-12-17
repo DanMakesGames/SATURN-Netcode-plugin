@@ -18,7 +18,7 @@ func _get_local_input()->Dictionary:
 
 ## Network Plugin
 func _network_transform_process(input:Dictionary) -> void:
-	var fixed_delta : float = 1.0 / ProjectSettings.get_setting("physics/common/physics_ticks_per_second") 
+	var fixed_delta : float = 1.0 / 60
 	process_input(input, fixed_delta)
 	process_movement(fixed_delta)
 
