@@ -17,5 +17,5 @@ func _physics_process(delta: float) -> void:
 		var player: NetcodeManager.Player = NetcodeManager.get_player(multiplayer.get_unique_id())
 		if player == null:
 			return
-		%RollbackFrames.text = "Rollback Frames: %d, ping: %d, packet loss: %d%%, server delta %d" \
-		% [NetcodeManager.get_rollback_frames(), player.ping, NetcodeManager.network_adaptor.PACKET_LOSS * 100, NetcodeManager.last_processed_tick - NetcodeManager.last_unconfirmed_player_tick]
+		%RollbackFrames.text = "Rollback Frames: %d, ping: %d, packet loss: %d%%, server delta %d, throttle: %d" \
+		% [NetcodeManager.get_rollback_frames(), player.ping, NetcodeManager.network_adaptor.PACKET_LOSS * 100, NetcodeManager.last_processed_tick - NetcodeManager.last_unconfirmed_player_tick, NetcodeManager.tick_throttle]

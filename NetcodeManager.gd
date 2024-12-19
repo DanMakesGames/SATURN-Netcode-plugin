@@ -52,8 +52,8 @@ var debug_ticks_since_last_process: int = 0
 
 var tick_throttle: int = 0
 
-var minimum_target_input_buffer_size: int = 2
-var maximum_target_input_buffer_size: int = 7
+# added onto the minimum buffer size to create a range 
+var input_buffer_range_max: int = 7
 
 var wait_for_all_player_input: bool = false
 
@@ -65,24 +65,7 @@ signal game_error()
 class Player extends Object:
 	var peer_id : int
 	var ping: int = -1
-	var packet_reception_history: int
-	var packet_history_length: int = 100
 	var tick_throttle: int = 0
-	
-	var debug_buffer_total: int = 0
-	
-	func _init() -> void:
-		packet_reception_history = packet_history_length
-	
-	func packet_recieved() -> void:
-		packet_reception_history += 1
-		packet_reception_history = clampi(packet_reception_history, -100, 100)
-	
-	func update_packet_reception_history() -> void:
-		packet_reception_history -= 1
-	
-	func get_packet_loss() -> float:
-		return (packet_history_length - packet_reception_history) / packet_history_length
 
 var players : Array[Player]
 
@@ -266,15 +249,16 @@ func get_player_input_buffer_size(peer_id: int) -> int:
 	
 	# starting at the last processed tick, count forward
 	var true_input_count: int = 0
+	var sequential_tick: int = last_processed_tick + 1
 	for index in player_input_buffer.size():
 		var player_input: PlayerInput = player_input_buffer[index]
-		if player_input.tick > last_processed_tick && player_input.is_predicted == false:
+		if player_input.tick > last_processed_tick && player_input.is_predicted == false && player_input.tick == sequential_tick:
+			sequential_tick += 1
 			true_input_count += 1 
 	
 	# Because we send redundant input messages, player should hypothetically only be missing the very most recent input.
 	return true_input_count
 		
-
 func _ready() -> void:
 	network_adaptor = NetworkAdaptor.new()
 	add_child(network_adaptor)
@@ -299,8 +283,6 @@ func _physics_process(delta: float) -> void:
 	if not started:
 		return
 	
-	if multiplayer.is_server() == false:
-		print ("Delta %f throttle %d" % [delta,tick_throttle])
 	# Cleanup state buffer. Retire state that it's unlikely we'll need to return to.
 	# Let's save the input buffer on the server so we can save it as a replay?
 	cleanup_state_buffer()
@@ -319,17 +301,10 @@ func perform_server_realtime_tick() -> bool:
 	
 	current_tick = last_processed_tick + 1
 	
-	# update throttling
 	for player in players:
-		player.update_packet_reception_history()
-		var player_input_buffer_size: int = get_player_input_buffer_size(player.peer_id)
-		player.debug_buffer_total += player_input_buffer_size
-		var average_buffer_size:float = player.debug_buffer_total / (current_tick + 1)
-		print("Server: Ave Buffer: %f" % average_buffer_size)
-		if player_input_buffer_size < 3:
-			player.tick_throttle = 1
-		else:
-			player.tick_throttle = 0
+		network_adaptor.send_ping_request(player.peer_id)
+	
+	update_client_throttle()
 	
 	var should_tick: bool = true
 	
@@ -366,9 +341,11 @@ func perform_realtime_tick() -> bool:
 	
 	# UPSTREAM THROTTLE. Modulate time to increase or decrease input sent to server. See Overwatch.
 	if tick_throttle > 0:
-		Engine.physics_ticks_per_second = 120
-	else:
+		Engine.physics_ticks_per_second = 66
+	elif tick_throttle == 0:
 		Engine.physics_ticks_per_second = 60
+	elif tick_throttle < 0:
+		Engine.physics_ticks_per_second = 54
 	
 	current_tick = last_processed_tick + 1
 	
@@ -431,12 +408,31 @@ func network_tick() -> void:
 			if player_input == null || player_input.is_predicted:
 				node_input = generate_and_save_input_prediction(current_tick, node.get_multiplayer_authority(), node.get_path())
 				if multiplayer.is_server():
-					print("Server: STARVATION %d" % get_player_input_buffer_size(player.peer_id))
+					print("Server: STARVATION: %d on tick %d" % [player.peer_id, current_tick])
 			else:
 				node_input = player_input.input.get(String(node.get_path()), {})
 		
 		if node.has_method(NETWORK_PROCESS_FUNCTION):
 			node.call(NETWORK_PROCESS_FUNCTION, node_input)
+
+func update_client_throttle() -> void:
+	for player in players:
+		var player_input_buffer_size: int = get_player_input_buffer_size(player.peer_id)
+		
+		# all calculations are in milliseconds.
+		# minimum should always be at least 1
+		var minimum_buffer_size: int = maxi(1, ceili((float(Engine.physics_ticks_per_second) / 1000.0) * float(player.ping)))
+		var maximum_buffer_size: int = input_buffer_range_max + minimum_buffer_size
+		
+		#print("BUFFER: %d : %d" % [player_input_buffer_size, minimum_buffer_size])
+		if player_input_buffer_size < minimum_buffer_size:
+			print("Server: LOW BUFFER %d on %d: %d < [%d : %d]" % [player.peer_id, current_tick, player_input_buffer_size, minimum_buffer_size, maximum_buffer_size])
+			player.tick_throttle = 1 
+		elif player_input_buffer_size > maximum_buffer_size:
+			print("Server: HIGH BUFFER %d on %d: %d > [%d : %d]" % [player.peer_id, current_tick, player_input_buffer_size, minimum_buffer_size, maximum_buffer_size])
+			player.tick_throttle = -1
+		else:
+			player.tick_throttle = 0
 
 ## Either add or modify state buffer
 func save_game_state(tick: int, should_overwrite_true_states : bool = true) -> bool:
@@ -685,12 +681,10 @@ func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) 
 		var input_tick := input_index + initial_tick
 		
 		var player_input : PlayerInput = get_or_add_player_input(peer_id, input_tick)
-			
+		
 		var recieved_player_input := message_serializer.deserialize_player_input(player_input_data[input_index])
 		player_input.input = recieved_player_input
 		player_input.is_predicted = false
-	
-	player.packet_recieved()
 
 # client
 func cleanup_state_buffer() -> void:
@@ -717,6 +711,9 @@ func cleanup_input_buffer() -> void:
 		for count in elements_to_remove:
 			player_input_buffer.pop_front()
 			
-func on_recieve_ping_update(ping: int) -> void:
-	var player: Player = get_player(multiplayer.get_unique_id())
+func on_recieve_ping_update(ping: int, peer_id: int) -> void:
+	if multiplayer.is_server() == false:
+		peer_id = multiplayer.get_unique_id()
+	var player: Player = get_player(peer_id)
+	assert(player != null, "Recieved ping from unknown player")
 	player.ping = ping

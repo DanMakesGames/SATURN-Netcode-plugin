@@ -1,27 +1,35 @@
 extends Node
 
-const DELAY_TIME: float = 0.02
+const DELAY_TIME: float = 0.01
 const PACKET_LOSS: float = 0.01
 
 signal recieve_input_update(sender_peer_id: int, message: PackedByteArray)
 signal recieve_state_update(message: PackedByteArray)
-signal recieve_ping_update(ping:int)
+signal recieve_ping_update(ping:int, sender_peer_id: int)
 
-var ping_timeout_timer: Timer = null
-var ping_start_time: int = -1
+# peer_id -> PingRequest
+var ping_requests: Dictionary = {}
 
-func _ready() -> void:
-	ping_timeout_timer = Timer.new()
-	add_child(ping_timeout_timer)
-	ping_timeout_timer.wait_time = 5
-	ping_timeout_timer.timeout.connect(self.ping_timeout)
+class PingRequest extends Object:
+	var ping_start_time: int = -1
+	var timer: Timer
+	
+	func _init(parent: Node)->void:
+		timer = Timer.new()
+		parent.add_child(timer)
+		timer.wait_time = 1
 
 func send_ping_request(peer_id: int) -> void:
-	if ping_timeout_timer.is_stopped() == false:
+	var ping_request: PingRequest = ping_requests.get(peer_id, null)
+	if ping_request == null:
+		ping_request = PingRequest.new(self)
+		ping_requests[peer_id] = ping_request 
+		
+	if ping_request.timer.is_stopped() == false:
 		return
 
-	ping_start_time = Time.get_ticks_msec()
-	ping_timeout_timer.start()
+	ping_request.ping_start_time = Time.get_ticks_msec()
+	ping_request.timer.start()
 	
 	if DELAY_TIME > 0:
 		await get_tree().create_timer(DELAY_TIME, true, true).timeout
@@ -39,20 +47,18 @@ func recieve_ping_request() -> void:
 	
 @rpc("any_peer", "unreliable")
 func recieve_ping_response() -> void:
-	var ping_end_time: int = Time.get_ticks_msec()
-	var ping: int = ping_end_time - ping_start_time
-	recieve_ping_update.emit(ping)
-	ping_start_time = -1
+	var peer_id: int = multiplayer.get_remote_sender_id()
 	
-func ping_timeout() -> void:
-	if ping_start_time == -1:
+	var ping_request: PingRequest = ping_requests.get(peer_id, null)
+	if ping_request == null:
+		push_error("No request found for recieved ping.")
 		return
 	
 	var ping_end_time: int = Time.get_ticks_msec()
-	var ping: int = ping_end_time - ping_start_time
-	recieve_ping_update.emit(ping)
-	ping_start_time = -1
+	var ping: int = ping_end_time - ping_request.ping_start_time
 	
+	recieve_ping_update.emit(ping, peer_id)
+
 func send_input_update(peer_id : int, message: PackedByteArray) -> void:
 	if DELAY_TIME > 0:
 		await get_tree().create_timer(DELAY_TIME, true, true).timeout
