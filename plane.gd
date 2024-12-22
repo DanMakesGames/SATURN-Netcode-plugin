@@ -31,9 +31,9 @@ func _network_transform_process(input:Dictionary) -> void:
 		if shoot_old != true:
 			var fresh_bullet:Node2D = Bullet.instantiate()
 			get_tree().current_scene.add_child(fresh_bullet)
+			fresh_bullet.name = fresh_bullet.name.validate_node_name()
 			fresh_bullet.velocity = velocity
 			fresh_bullet.position = self.position
-
 		shoot_old = true
 	else:
 		shoot_old = false

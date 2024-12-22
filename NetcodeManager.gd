@@ -48,7 +48,6 @@ var message_serializer : MessageSerializer
 var player_input_departure_buffer : Array[PackedByteArray]
 
 var debug_last_recieved_state_tick: int = -1
-var debug_ticks_since_last_process: int = 0
 
 var tick_throttle: int = 0
 
@@ -328,10 +327,7 @@ func perform_server_realtime_tick() -> bool:
 			return false
 		
 		last_processed_tick = last_processed_tick + 1
-		#print("SERVER: TICK:%d %d " % [debug_ticks_since_last_process,last_processed_tick])
-		debug_ticks_since_last_process = 0
-	
-	debug_ticks_since_last_process = debug_ticks_since_last_process + 1
+
 	send_state_to_all_clients()
 	return true
 	
@@ -425,9 +421,8 @@ func update_client_throttle() -> void:
 		var minimum_buffer_size: int = maxi(1, ceili((float(Engine.physics_ticks_per_second) / 1000.0) * float(player.ping)))
 		var maximum_buffer_size: int = input_buffer_range_max + minimum_buffer_size
 		
-		#print("BUFFER: %d : %d" % [player_input_buffer_size, minimum_buffer_size])
 		if player_input_buffer_size < minimum_buffer_size:
-			#print("Server: LOW BUFFER %d on %d: %d < [%d : %d]" % [player.peer_id, current_tick, player_input_buffer_size, minimum_buffer_size, maximum_buffer_size])
+			print("Server: LOW BUFFER %d on %d: %d < [%d : %d]" % [player.peer_id, current_tick, player_input_buffer_size, minimum_buffer_size, maximum_buffer_size])
 			player.tick_throttle = 1 
 		elif player_input_buffer_size > maximum_buffer_size:
 			#print("Server: HIGH BUFFER %d on %d: %d > [%d : %d]" % [player.peer_id, current_tick, player_input_buffer_size, minimum_buffer_size, maximum_buffer_size])
@@ -450,7 +445,7 @@ func save_game_state(tick: int, should_overwrite_true_states : bool = true) -> b
 		# Does a state exist for this node currently? If not create one.
 		var node_path : String = node.get_path()
 		var entity_state : EntityState = entity_states.get_or_add(node_path, EntityState.new())
-		
+
 		# Keep in mind, on the client we NEVER want to overwrite a true state.
 		if should_overwrite_true_states || entity_state.is_true == false:
 			entity_state.scene_asset = node.scene_file_path
@@ -485,10 +480,12 @@ func load_game_state(tick: int, only_load_true_states : bool = false) -> bool:
 		if entity_state.is_true || only_load_true_states == false:
 			var scene: PackedScene = load(entity_state.scene_asset)
 			var instance: Node = scene.instantiate()
+			var node_path: NodePath = NodePath(state_path)
+			 
+			instance.name = String(node_path.get_name(node_path.get_name_count() - 1))
+
 			get_tree().current_scene.add_child(instance)
 			current_nodes.push_back(instance)
-			if is_rollback:
-				print("Istantiate: %s" % instance.name)
 	
 	# update existing nodes
 	for node in current_nodes: 
@@ -497,10 +494,10 @@ func load_game_state(tick: int, only_load_true_states : bool = false) -> bool:
 			
 		var node_path : String = node.get_path()
 		var entity_state : EntityState = entity_states.get(node_path)
-		
+
 		# Destroy nodes that do not exist on this frame
 		if entity_state == null:
-			node.free()
+			node.queue_free()
 			continue
 			
 		if entity_state.is_true || only_load_true_states == false:
@@ -630,13 +627,10 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	assert(message.is_empty() != true, "Deserialization issue.")
 	
 	var tick : int = message[message_serializer.StateKeys.TICK]
-	# the clients should always be ahead of the server, im pretty sure.
-	#assert(tick <= last_processed_tick, "Client recieved state update from future.")
+	# TODO, if we are recieving states from the future, the client should probably throttle up to catch up.
 	
 	# we have the state for a single node here
-	var tick_state : TickState = get_tick_state(tick)
-	if tick_state == null:
-		return
+	var tick_state : TickState = get_or_add_tick_state(tick)
 
 	# update state buffer
 	var node_path : String = message[message_serializer.StateKeys.NODE_PATH]
@@ -658,10 +652,8 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	
 	var new_input_unrecieved : int = message[message_serializer.StateKeys.OLDEST_INPUT_TICK_UNRECIEVED]
 	if new_input_unrecieved > last_unconfirmed_player_tick:
-		#print("CLIENT %d: input confirmation %d -> %d" % [multiplayer.get_unique_id(), last_unconfirmed_player_tick, new_input_unrecieved])
 		last_unconfirmed_player_tick = new_input_unrecieved
 	
-
 	if tick_throttle != message[message_serializer.StateKeys.THROTTLE_COMMAND]:
 		print("throttle: %d, %d %d -> %d" % [multiplayer.get_unique_id(), current_tick, tick_throttle, message[message_serializer.StateKeys.THROTTLE_COMMAND]])
 	tick_throttle = message[message_serializer.StateKeys.THROTTLE_COMMAND]
