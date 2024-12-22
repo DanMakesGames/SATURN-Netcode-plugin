@@ -14,6 +14,7 @@ enum StateKeys {
 	TICK,
 	INPUT_PEER_ID,
 	NODE_PATH,
+	NODE_SCENE_ASSET,
 	STATE,
 	PLAYER_INPUT_DATA,
 	OLDEST_INPUT_TICK_UNRECIEVED,
@@ -59,6 +60,9 @@ func serialize_state_message(message : Dictionary) -> PackedByteArray:
 	assert(node_path.is_empty() == false, "message node path is empty")
 	buffer.put_string(node_path)
 	
+	var node_scene_asset: String = message.get(StateKeys.NODE_SCENE_ASSET,"")
+	buffer.put_string(node_scene_asset)
+	
 	var state : PackedByteArray = message.get(StateKeys.STATE)
 	assert(state != null, "State message has no state")
 	#print_debug("CLIENT: State Size: %d" % state.size())
@@ -95,13 +99,17 @@ func deserialize_state_message(data: PackedByteArray) -> Dictionary:
 	assert(node_path.is_empty() == false, "Recieved state with no node path")
 	message[StateKeys.NODE_PATH] = node_path
 	
+	var node_scene_asset: String = buffer.get_string()
+	assert(node_path.is_empty() == false, "Recieved state with no scene asset")
+	message[StateKeys.NODE_SCENE_ASSET] = node_scene_asset
+	
 	var state_size := buffer.get_u16()
 	var state_data_array : Array = buffer.get_data(state_size)
 	message[StateKeys.STATE] = deserialize_state(state_data_array[1])
 
 	var input_size := buffer.get_u16()
 	if input_size == 0:
-		message[StateKeys.PLAYER_INPUT_DATA] = PackedByteArray()
+		message[StateKeys.PLAYER_INPUT_DATA] = {}
 	else:
 		message[StateKeys.PLAYER_INPUT_DATA] = deserialize_node_input(buffer.get_data(input_size)[1])
 	
