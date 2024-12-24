@@ -1,11 +1,9 @@
-[gd_scene load_steps=3 format=3 uid="uid://tesm0efvhgac"]
+[gd_scene load_steps=2 format=3 uid="uid://clagmmhj8ag8e"]
 
-[ext_resource type="Texture2D" uid="uid://7365cxwtvtx6" path="res://icon.svg" id="1_lp8eh"]
 [ext_resource type="Script" path="res://plane.gd" id="1_qekt0"]
 
-[node name="Node2D" type="Node2D" groups=["network_entity"]]
+[node name="Node2D" type="Node2D"]
 script = ExtResource("1_qekt0")
 
-[node name="Sprite2D" type="Sprite2D" parent="."]
-scale = Vector2(0.25, 0.25)
-texture = ExtResource("1_lp8eh")
+[node name="PlaneSprite" type="Sprite2D" parent="."]
+unique_name_in_owner = true

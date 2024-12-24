@@ -64,21 +64,21 @@ func on_peer_connected(peer_id : int) -> void:
 		NetcodeManager.add_player(peer_id)
 
 func on_peer_disconnected(peer_id : int) -> void:
-	print("peer disconnected id: %d" % peer_id)
+	print("%d: peer disconnected id: %d" % [multiplayer.get_unique_id(), peer_id])
 	if multiplayer.is_server():
 		NetcodeManager.remove_player(peer_id)
 
-func tell_server_to_start_game() -> void:
+func tell_server_to_start_game(level: String) -> void:
 	if multiplayer.is_server() == true:
 		return
-	start_game_server.rpc_id(1)
+	start_game_server.rpc_id(1, level)
 	
 @rpc("any_peer","call_remote","reliable")
-func start_game_server() -> void:
+func start_game_server(level_to_load: String) -> void:
 	if multiplayer.is_server() == false:
 		return
 	# let server gather some ping data if it hasnt already.
-	await(2.0)
+	
 	print("Server: Begin Game")
 	
 	var count : int = 0
@@ -86,12 +86,12 @@ func start_game_server() -> void:
 		player_assignments[count] = peer_id
 		count = count + 1
 		
-	load_game.rpc(player_assignments)
+	load_game.rpc(player_assignments, level_to_load)
 
 @rpc("authority", "call_local", "reliable")
-func load_game(_player_assignments: Dictionary) -> void:
+func load_game(_player_assignments: Dictionary, level_to_load: String) -> void:
 	player_assignments = _player_assignments
-	get_tree().change_scene_to_file("res://level.tscn")
+	get_tree().change_scene_to_file(level_to_load)
 
 @rpc("any_peer", "call_local", "reliable")
 func player_finished_loading() -> void:
@@ -99,5 +99,7 @@ func player_finished_loading() -> void:
 	var required_loaded := multiplayer.get_peers().size() + 1
 	print("Player Loaded %d / %d" % [players_loaded, required_loaded])
 	if players_loaded >= required_loaded:
-		print("Start Game Server")
+		print("All players loaded. Waiting for snyc.")
+		NetcodeManager.begin_sync()
+		await get_tree().create_timer(2, true, true).timeout
 		NetcodeManager.game_start()

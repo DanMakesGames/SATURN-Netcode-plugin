@@ -33,9 +33,13 @@ layout_mode = 2
 text = "Connect
 "
 
-[node name="StartButton" type="Button" parent="HBoxContainer"]
+[node name="StartGameButton" type="Button" parent="HBoxContainer"]
 layout_mode = 2
-text = "Start Game
+text = "Start Game"
+
+[node name="StartTestButton" type="Button" parent="HBoxContainer"]
+layout_mode = 2
+text = "Test
 "
 
 [node name="IpLineEdit" type="LineEdit" parent="HBoxContainer"]
@@ -46,4 +50,5 @@ placeholder_text = "IP"
 expand_to_text_length = true
 
 [connection signal="pressed" from="HBoxContainer/ConnectButton" to="." method="_on_connect_button_pressed"]
-[connection signal="pressed" from="HBoxContainer/StartButton" to="." method="_on_start_button_pressed"]
+[connection signal="pressed" from="HBoxContainer/StartGameButton" to="." method="_on_start_game_button_pressed"]
+[connection signal="pressed" from="HBoxContainer/StartTestButton" to="." method="_on_start_button_pressed"]
