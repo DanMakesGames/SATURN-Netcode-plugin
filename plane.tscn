@@ -1,9 +1,29 @@
-[gd_scene load_steps=2 format=3 uid="uid://clagmmhj8ag8e"]
+[gd_scene load_steps=5 format=3 uid="uid://clagmmhj8ag8e"]
 
 [ext_resource type="Script" path="res://plane.gd" id="1_qekt0"]
+[ext_resource type="Texture2D" uid="uid://kdksks4bqiph" path="res://CollisionDisplay.png" id="2_hdkau"]
+[ext_resource type="Texture2D" uid="uid://c6ekkohyf3n06" path="res://PlaneSpriteRed.png" id="3_yafx1"]
 
-[node name="Node2D" type="Node2D"]
+[sub_resource type="CircleShape2D" id="CircleShape2D_7qnfo"]
+radius = 15.0
+
+[node name="Node2D" type="Node2D" groups=["network_entity"]]
 script = ExtResource("1_qekt0")
+
+[node name="Area2D" type="Area2D" parent="."]
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Area2D"]
+shape = SubResource("CircleShape2D_7qnfo")
+debug_color = Color(6.73831e-06, 0.740818, 0.862317, 0.42)
+
+[node name="HitShapeMarker" type="Sprite2D" parent="."]
+unique_name_in_owner = true
+texture = ExtResource("2_hdkau")
 
 [node name="PlaneSprite" type="Sprite2D" parent="."]
 unique_name_in_owner = true
+texture = ExtResource("3_yafx1")
+
+[connection signal="area_entered" from="Area2D" to="." method="_on_area_2d_area_entered"]
+[connection signal="body_entered" from="Area2D" to="." method="_on_area_2d_body_entered"]
+[connection signal="body_shape_entered" from="Area2D" to="." method="_on_area_2d_body_shape_entered"]

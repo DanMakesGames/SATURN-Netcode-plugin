@@ -99,6 +99,8 @@ class EntityState extends Object:
 	## Used for spawning this on the client or rollbacks
 	var scene_asset: String
 	
+	var owning_peer: int = 1
+	
 	var state: Dictionary
 
 class PlayerInput extends Object:
@@ -444,6 +446,7 @@ func save_game_state(tick: int, should_overwrite_true_states : bool = true) -> b
 		# Keep in mind, on the client we NEVER want to overwrite a true state.
 		if should_overwrite_true_states || entity_state.is_true == false:
 			entity_state.scene_asset = node.scene_file_path
+			entity_state.owning_peer = node.get_multiplayer_authority()
 			entity_state.state = node.call(SAVE_STATE_FUNCTION)
 	
 	return true
@@ -476,7 +479,7 @@ func load_game_state(tick: int, only_load_true_states : bool = false) -> bool:
 			var scene: PackedScene = load(entity_state.scene_asset)
 			var instance: Node = scene.instantiate()
 			var node_path: NodePath = NodePath(state_path)
-			 
+			instance.set_multiplayer_authority(entity_state.owning_peer)
 			instance.name = String(node_path.get_name(node_path.get_name_count() - 1))
 
 			get_tree().current_scene.add_child(instance)
@@ -562,30 +565,37 @@ func update_oldest_unrecieved_input_tick() -> void:
 func send_state_to_all_clients() -> void:
 	# first get the last processed tick
 	var latest_state := get_tick_state(current_tick)
-	if latest_state == null:
-		return
-	
-	for node_path : String in latest_state.entity_states:
-		var authority_peer_id : int = get_node(node_path).get_multiplayer_authority()
-		var player_input_for_node : Dictionary = {}
-		if authority_peer_id != 1: 
-			var player_input : PlayerInput = get_player_input(authority_peer_id, current_tick)
-			if player_input != null:
-				player_input_for_node = player_input.input.get(node_path, {})
-		
-		var entity_state: EntityState = latest_state.entity_states[node_path]
-		var node_scene_asset: String = entity_state.scene_asset
-		var node_state : Dictionary = entity_state.state
-		
-		for player in players:
+
+	for player in players:
+		if latest_state != null && latest_state.entity_states.is_empty() == false:
+			for node_path : String in latest_state.entity_states:
+				var entity_state: EntityState = latest_state.entity_states[node_path]
+				var player_input_for_node : Dictionary = {}
+				if entity_state.owning_peer != 1: 
+					var player_input : PlayerInput = get_player_input(entity_state.owning_peer, current_tick)
+					if player_input != null:
+						player_input_for_node = player_input.input.get(node_path, {})
+				
+				send_node_state_to_client(\
+					player.peer_id,\
+					current_tick,\
+					node_path,\
+					entity_state.scene_asset,\
+					entity_state.owning_peer,\
+					entity_state.state,\
+					player_input_for_node,\
+					player.oldest_unrecieved_input_tick,\
+					player.tick_throttle)
+		# incase we have no state, or no nodes, just send empty update
+		else:
 			send_node_state_to_client(\
 				player.peer_id,\
 				current_tick,\
-				node_path,\
-				node_scene_asset,\
-				node_state,\
-				authority_peer_id,\
-				player_input_for_node,\
+				"",\
+				"",\
+				1,\
+				{},\
+				{},\
 				player.oldest_unrecieved_input_tick,\
 				player.tick_throttle)
 
@@ -595,17 +605,17 @@ func send_node_state_to_client(\
 	tick: int,\
 	node_path: String,\
 	node_scene_asset: String,\
+	node_owner_peer: int,\
 	node_state: Dictionary,\
-	input_peer_id: int,\
 	node_input: Dictionary,\
 	oldest_unrecieved_input_tick: int,\
 	throttle_command: int) -> void:
 	
 	var message := {}
 	message[message_serializer.StateKeys.TICK] = tick
-	message[message_serializer.StateKeys.INPUT_PEER_ID] = input_peer_id
 	message[message_serializer.StateKeys.NODE_PATH] = node_path
 	message[message_serializer.StateKeys.NODE_SCENE_ASSET] = node_scene_asset
+	message[message_serializer.StateKeys.NODE_OWNING_PEER] = node_owner_peer
 	message[message_serializer.StateKeys.STATE] = message_serializer.serialize_state(node_state)
 	message[message_serializer.StateKeys.PLAYER_INPUT_DATA] = message_serializer.serialize_node_input(node_input)
 	message[message_serializer.StateKeys.OLDEST_INPUT_TICK_UNRECIEVED] = oldest_unrecieved_input_tick
@@ -631,22 +641,23 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 
 	# update state buffer
 	var node_path : String = message[message_serializer.StateKeys.NODE_PATH]
-	
-	var entity_state : EntityState = tick_state.entity_states.get_or_add(node_path, EntityState.new())
-	entity_state.scene_asset = message[message_serializer.StateKeys.NODE_SCENE_ASSET]
-	entity_state.state = message[message_serializer.StateKeys.STATE]
-	
-	# request a rollback if we just recieved a new state
-	# TODO: better more complex means of determining if we need to do a rollback.
-	if entity_state.is_true == false:
-		request_rollback(tick)
-		entity_state.is_true = true
+	if node_path.is_empty() != true:
+		var entity_state : EntityState = tick_state.entity_states.get_or_add(node_path, EntityState.new())
+		entity_state.scene_asset = message[message_serializer.StateKeys.NODE_SCENE_ASSET]
+		entity_state.owning_peer = message[message_serializer.StateKeys.NODE_OWNING_PEER]
+		entity_state.state = message[message_serializer.StateKeys.STATE]
 		
-	# update input buffer
-	var input_peer_id : int = message[message_serializer.StateKeys.INPUT_PEER_ID] 
-	var player_input := get_or_add_player_input(input_peer_id, tick)
-	player_input.input[node_path] = message[message_serializer.StateKeys.PLAYER_INPUT_DATA]
-	player_input.is_predicted = false
+		# request a rollback if we just recieved a new state
+		# TODO: better more complex means of determining if we need to do a rollback.
+		if entity_state.is_true == false:
+			request_rollback(tick)
+			entity_state.is_true = true
+			
+		# update input buffer
+		var input_peer_id : int = message[message_serializer.StateKeys.NODE_OWNING_PEER] 
+		var player_input := get_or_add_player_input(input_peer_id, tick)
+		player_input.input[node_path] = message[message_serializer.StateKeys.PLAYER_INPUT_DATA]
+		player_input.is_predicted = false
 	
 	var new_input_unrecieved : int = message[message_serializer.StateKeys.OLDEST_INPUT_TICK_UNRECIEVED]
 	if new_input_unrecieved > last_unconfirmed_player_tick:
@@ -663,16 +674,12 @@ func send_all_unconfirmed_input_to_server() -> void:
 	var unconfirmed_input: Array[PackedByteArray] = player_input_departure_buffer.duplicate()
 
 	var messages_to_send: int = ceili(float(unconfirmed_input.size()) / float(MAX_PLAYER_INPUT_TICKS_PER_MESSAGE))
-	var debug_string: String = "CLIENT %d: Send Tick %d, Last %d Buffer Size: %d" % [multiplayer.get_unique_id(), current_tick, current_tick - unconfirmed_input.size(), unconfirmed_input.size()]
 	
 	for count in messages_to_send:
 		var start_index: int = count * MAX_PLAYER_INPUT_TICKS_PER_MESSAGE
 		var end_index: int = (count + 1) * MAX_PLAYER_INPUT_TICKS_PER_MESSAGE
 		var initial_tick: int = last_unconfirmed_player_tick + (count * MAX_PLAYER_INPUT_TICKS_PER_MESSAGE)
-		#debug_string = debug_string + ("[%d, %d], " % [start_index, start_index + MAX_PLAYER_INPUT_TICKS_PER_MESSAGE])
 		send_input_to_server(unconfirmed_input.slice(start_index, end_index), initial_tick)
-	
-	#print(debug_string)
 
 ## On Client, used to send local player input for all nodes up to the server
 func send_input_to_server(serialized_input_ticks: Array[PackedByteArray], initial_tick : int, peer_id : int = 1) -> void:
