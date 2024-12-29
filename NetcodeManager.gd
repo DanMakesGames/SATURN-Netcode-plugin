@@ -61,6 +61,7 @@ var tick_throttle: int = 0
 var input_buffer_range_max: int = 7
 
 # Signals
+signal begin_syncing()
 signal game_started()
 signal game_stopped()
 signal game_error()
@@ -87,6 +88,10 @@ class TickState extends Object:
 	## node path -> EntityState
 	## gameplay state at the end of this tick ("as a result of this tick")
 	var entity_states : Dictionary
+	
+	var destroy_events: Array[NodePath]
+	
+	# TODO: Possibly add some system for sending down events like HIT or DEATH or COLLISION. A Node, an event funtion name, and a set of parameters
 	
 	func _init(_tick : int) -> void:
 		tick = _tick
@@ -181,6 +186,13 @@ func get_or_add_tick_state(tick : int) -> TickState:
 		assert("get_or_add_tick_state returned wrong tick. Wanted %d, returned %d" % [tick, state_buffer[state_index].tick])
 		return state_buffer[tick_delta - 1]
 
+func network_free(node: Node) -> void:
+	var tick_state: TickState = get_or_add_tick_state(current_tick)
+	if multiplayer.is_server():
+		tick_state.destroy_events.push_back(node.get_path())
+	
+	node.queue_free()
+
 func get_or_add_player_input(peer_id: int, tick: int) -> PlayerInput:
 	var default_array : Array[PlayerInput] = []
 	var player_input_buffer : Array[PlayerInput] = input_buffer.get_or_add(peer_id,default_array)
@@ -231,7 +243,7 @@ func generate_and_save_input_prediction(tick: int, peer_id: int, node_path: Stri
 	if previous_player_input == null:
 		return {}
 	
-	var fresh_input_prediction: Dictionary = generate_input_prediction(previous_player_input.input[node_path])
+	var fresh_input_prediction: Dictionary = generate_input_prediction(previous_player_input.input.get(node_path,{}))
 	
 	# save to input buffer
 	var player_input: PlayerInput = get_or_add_player_input(peer_id, tick)
@@ -280,10 +292,12 @@ func _ready() -> void:
 
 func begin_sync() -> void:
 	network_state = NetworkState.SYNCING
+	begin_syncing.emit()
 
 @rpc("authority", "call_remote", "reliable")
 func client_begin_sync() -> void:
 	network_state = NetworkState.SYNCING
+	begin_syncing.emit()
 
 # Starts ticking the game. Call when you want the gameplay to start.
 func game_start() -> void:
@@ -391,6 +405,9 @@ func network_tick() -> void:
 	# Call on this node grabbing either from entity state or the input state, neutral
 	var nodes : Array[Node] = get_tree().get_nodes_in_group(NETWORK_ENTITY_GROUP)
 	for node in nodes:
+		if node.is_queued_for_deletion():
+			continue
+			
 		var player : Player = get_player(node.get_multiplayer_authority())
 		var node_input: Dictionary
 		if player != null:
@@ -418,7 +435,7 @@ func update_client_throttle() -> void:
 		var maximum_buffer_size: int = input_buffer_range_max + minimum_buffer_size
 		
 		if player_input_buffer_size < minimum_buffer_size:
-			print("Server: LOW BUFFER %d on %d: %d < [%d : %d]" % [player.peer_id, current_tick, player_input_buffer_size, minimum_buffer_size, maximum_buffer_size])
+			#print("Server: LOW BUFFER %d on %d: %d < [%d : %d]" % [player.peer_id, current_tick, player_input_buffer_size, minimum_buffer_size, maximum_buffer_size])
 			player.tick_throttle = 1 
 		elif player_input_buffer_size > maximum_buffer_size:
 			#print("Server: HIGH BUFFER %d on %d: %d > [%d : %d]" % [player.peer_id, current_tick, player_input_buffer_size, minimum_buffer_size, maximum_buffer_size])
@@ -493,11 +510,8 @@ func load_game_state(tick: int, only_load_true_states : bool = false) -> bool:
 		var node_path : String = node.get_path()
 		var entity_state : EntityState = entity_states.get(node_path)
 
-		# Destroy nodes that do not exist on this frame
-		if entity_state == null:
-			node.queue_free()
-			continue
-			
+		# TODO: Destroy any nodes that should be destroyed this frame
+		
 		if entity_state.is_true || only_load_true_states == false:
 			node.call(LOAD_STATE_FUNCTION, entity_state.state)
 	
@@ -561,71 +575,69 @@ func update_oldest_unrecieved_input_tick() -> void:
 				player.oldest_unrecieved_input_tick += 1
 	
 ## On Server
-# TODO: Desperately in need of rewrite
 func send_state_to_all_clients() -> void:
-	# first get the last processed tick
-	var latest_state := get_tick_state(current_tick)
-
+	# Generate a single state message
+	var primary_message: Dictionary
+	# Pack on all housekeeping information, like oldest_unrecieved_input_tick, tick_throttle. This will only be attached to first packet.
+	primary_message[message_serializer.PrimaryStateMessageKeys.TICK] = current_tick
+	
+	# generate list of destruction events, from the last client acknoledgement to last_processed_tick. This will be attached to first packet.
+	var latest_state: TickState = get_tick_state(current_tick)
+	if latest_state != null:
+		primary_message[message_serializer.PrimaryStateMessageKeys.DESTROY_EVENTS] = latest_state.destroy_events
+	
+		# generate serialized list of most current states. If this gets too big, then break up into subsequent State-Only packets.
+		var serialized_node_state_messages: Array[PackedByteArray] = []
+		for node_path: String in latest_state.entity_states:
+			var entity_state: EntityState = latest_state.entity_states[node_path]
+			var node_state_message: Dictionary
+			node_state_message[message_serializer.NodeStateKeys.NODE_PATH] = node_path
+			node_state_message[message_serializer.NodeStateKeys.ASSET] = entity_state.scene_asset
+			node_state_message[message_serializer.NodeStateKeys.STATE] = message_serializer.default_serialize_state(entity_state.state)
+			node_state_message[message_serializer.NodeStateKeys.OWNER] = entity_state.owning_peer
+			
+			# Grab the input for this node on this frame, if its controlled by a player.
+			if entity_state.owning_peer != 1:
+				var player_input: PlayerInput = get_player_input(entity_state.owning_peer, current_tick)
+				if player_input != null:
+					node_state_message[message_serializer.NodeStateKeys.PLAYER_INPUT] = message_serializer.serialize_node_input(player_input.input)
+			
+			var serialized_node_state_message: PackedByteArray = message_serializer.serializer_node_state_message(node_state_message)
+			serialized_node_state_messages.push_back(serialized_node_state_message)
+		
+		primary_message[message_serializer.StateUpdateKeys.STATE] = serialized_node_state_messages
+		
+	# loop over players and send everyone that state message
 	for player in players:
-		if latest_state != null && latest_state.entity_states.is_empty() == false:
-			for node_path : String in latest_state.entity_states:
-				var entity_state: EntityState = latest_state.entity_states[node_path]
-				var player_input_for_node : Dictionary = {}
-				if entity_state.owning_peer != 1: 
-					var player_input : PlayerInput = get_player_input(entity_state.owning_peer, current_tick)
-					if player_input != null:
-						player_input_for_node = player_input.input.get(node_path, {})
-				
-				send_node_state_to_client(\
-					player.peer_id,\
-					current_tick,\
-					node_path,\
-					entity_state.scene_asset,\
-					entity_state.owning_peer,\
-					entity_state.state,\
-					player_input_for_node,\
-					player.oldest_unrecieved_input_tick,\
-					player.tick_throttle)
-		# incase we have no state, or no nodes, just send empty update
-		else:
-			send_node_state_to_client(\
-				player.peer_id,\
-				current_tick,\
-				"",\
-				"",\
-				1,\
-				{},\
-				{},\
-				player.oldest_unrecieved_input_tick,\
-				player.tick_throttle)
+		primary_message[message_serializer.StateUpdateKeys.OLDEST_INPUT_TICK_UNRECIEVED] = player.oldest_unrecieved_input_tick
+		primary_message[message_serializer.StateUpdateKeys.THROTTLE_COMMAND] = player.tick_throttle
+		var serialized_message: PackedByteArray = message_serializer.serialize_state_update_message(primary_message)
+		send_state_to_client(player.peer_id, serialized_message)
 
 ## On Server
-func send_node_state_to_client(\
-	peer_id: int,\
-	tick: int,\
-	node_path: String,\
-	node_scene_asset: String,\
-	node_owner_peer: int,\
-	node_state: Dictionary,\
-	node_input: Dictionary,\
-	oldest_unrecieved_input_tick: int,\
-	throttle_command: int) -> void:
-	
-	var message := {}
-	message[message_serializer.StateKeys.TICK] = tick
-	message[message_serializer.StateKeys.NODE_PATH] = node_path
-	message[message_serializer.StateKeys.NODE_SCENE_ASSET] = node_scene_asset
-	message[message_serializer.StateKeys.NODE_OWNING_PEER] = node_owner_peer
-	message[message_serializer.StateKeys.STATE] = message_serializer.serialize_state(node_state)
-	message[message_serializer.StateKeys.PLAYER_INPUT_DATA] = message_serializer.serialize_node_input(node_input)
-	message[message_serializer.StateKeys.OLDEST_INPUT_TICK_UNRECIEVED] = oldest_unrecieved_input_tick
-	message[message_serializer.StateKeys.THROTTLE_COMMAND] = throttle_command
-	
-	var message_data : PackedByteArray = message_serializer.serialize_state_message(message)
-	assert(message_data.size() != 0, "Error serializing state")
-	
-	network_adaptor.send_state_update(peer_id, message_data)
+func send_state_to_client(peer_id: int, serialized_message: PackedByteArray) -> void:
+	network_adaptor.send_state_update(peer_id, serialized_message)
 
+func receive_state_update(serialized_message: PackedByteArray) -> void:
+	var message: Dictionary = message_serializer.deserialize_state_update_message(serialized_message)
+	
+	var tick: int = message[message_serializer.PrimaryStateMessageKeys]
+	
+	tick_throttle = message[message_serializer.StateUpdateKeys.THROTTLE_COMMAND]
+	
+	var new_input_unrecieved : int = message[message_serializer.StateUpdateKeys.OLDEST_INPUT_TICK_UNRECIEVED]
+	if new_input_unrecieved > last_unconfirmed_player_tick:
+		last_unconfirmed_player_tick = new_input_unrecieved
+	
+	var tick_state : TickState = get_or_add_tick_state(tick)
+	tick_state.destroy_events = message[message_serializer.StateUpdateKeys.DESTROY_EVENTS]
+	
+	var node_states: Array[PackedByteArray] = message[message_serializer.StateUpdateKeys.STATE]
+	for node state in node_states:
+		
+	
+	# update state
+	
 ## On Client. State update for a single node.
 func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	assert(serialized_message.size() != 0, "Recieved empty state message")
@@ -663,8 +675,8 @@ func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
 	if new_input_unrecieved > last_unconfirmed_player_tick:
 		last_unconfirmed_player_tick = new_input_unrecieved
 	
-	if tick_throttle != message[message_serializer.StateKeys.THROTTLE_COMMAND]:
-		print("throttle: %d, %d %d -> %d" % [multiplayer.get_unique_id(), current_tick, tick_throttle, message[message_serializer.StateKeys.THROTTLE_COMMAND]])
+	#if tick_throttle != message[message_serializer.StateKeys.THROTTLE_COMMAND]:
+	#	print("throttle: %d, %d %d -> %d" % [multiplayer.get_unique_id(), current_tick, tick_throttle, message[message_serializer.StateKeys.THROTTLE_COMMAND]])
 	tick_throttle = message[message_serializer.StateKeys.THROTTLE_COMMAND]
 	
 	if tick > debug_last_recieved_state_tick:

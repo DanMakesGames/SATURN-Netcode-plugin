@@ -10,15 +10,20 @@ enum PlayerInputKeys {
 	PLAYER_INPUT_DATA
 }
 
-enum StateKeys {
+enum StateUpdateKeys {
 	TICK,
-	NODE_PATH,
-	NODE_SCENE_ASSET,
-	NODE_OWNING_PEER,
-	STATE,
-	PLAYER_INPUT_DATA,
 	OLDEST_INPUT_TICK_UNRECIEVED,
-	THROTTLE_COMMAND
+	THROTTLE_COMMAND,
+	DESTROY_EVENTS,
+	STATE
+}
+
+enum NodeStateKeys {
+	NODE_PATH,
+	ASSET,
+	OWNER,
+	STATE,
+	PLAYER_INPUT
 }
 
 func serialize_player_input(player_input: Dictionary) -> PackedByteArray:
@@ -38,84 +43,115 @@ func deserialize_node_input(node_input_data: PackedByteArray) -> Dictionary:
 	return bytes_to_var(node_input_data)
 
 ## state: node_path -> Dictionary (which contains the generated node state)
-func serialize_state(state: Dictionary) -> PackedByteArray:
+func default_serialize_state(state: Dictionary) -> PackedByteArray:
 	return var_to_bytes(state)
 	
-func deserialize_state(state_data: PackedByteArray) -> Dictionary:
+func default_deserialize_state(state_data: PackedByteArray) -> Dictionary:
 	return bytes_to_var(state_data)
 
-func serialize_state_message(message : Dictionary) -> PackedByteArray:
+func serializer_node_state_message(state_message: Dictionary) -> PackedByteArray:
 	var buffer := StreamPeerBuffer.new()
 	buffer.resize(DEFAULT_MESSAGE_SIZE)
 	
-	var tick : int = message.get(StateKeys.TICK, -1)
-	assert(tick != -1, "state message has no tick element")
-	buffer.put_u32(tick)
-	
-	var node_path : String = message.get(StateKeys.NODE_PATH, "")
-	assert(node_path.is_empty() == false, "message node path is empty")
+	var node_path: String = state_message.get(NodeStateKeys.NODE_PATH, "")
 	buffer.put_string(node_path)
 	
-	var node_scene_asset: String = message.get(StateKeys.NODE_SCENE_ASSET,"")
-	buffer.put_string(node_scene_asset)
+	var asset: String = state_message.get(NodeStateKeys.ASSET, "")
+	buffer.put_string(asset)
 	
-	var node_owner_peer: int = message.get(StateKeys.NODE_OWNING_PEER, 1)
-	buffer.put_u16(node_owner_peer)
+	var owner: String = state_message.get(NodeStateKeys.OWNER, "")
+	buffer.put_string(owner)
 	
-	var state : PackedByteArray = message.get(StateKeys.STATE)
-	assert(state != null, "State message has no state")
-	#print_debug("CLIENT: State Size: %d" % state.size())
+	var state: PackedByteArray = state_message.get(NodeStateKeys.STATE, PackedByteArray())
 	buffer.put_u16(state.size())
 	buffer.put_data(state)
 	
-	var node_input : PackedByteArray = message.get(StateKeys.PLAYER_INPUT_DATA)
-	assert(node_input != null, "state message has no input")
-	buffer.put_u16(node_input.size())
-	buffer.put_data(node_input)
-	
-	var last_input_tick_received : int = message.get(StateKeys.OLDEST_INPUT_TICK_UNRECIEVED, -1)
-	assert(last_input_tick_received >= 0, "State message doesnt have last received input tick")
-	buffer.put_u32(last_input_tick_received)
-	
-	var throttle_command: int = message.get(StateKeys.THROTTLE_COMMAND, 0)
-	buffer.put_8(throttle_command)
+	var input: PackedByteArray = state_message.get(NodeStateKeys.PLAYER_INPUT, PackedByteArray())
+	buffer.put_u16(input.size())
+	buffer.put_data(input)
 	
 	buffer.resize(buffer.get_position())
 	return buffer.data_array
 
-func deserialize_state_message(data: PackedByteArray) -> Dictionary:
+func deserializer_node_state_message(data: PackedByteArray) -> Dictionary:
 	var buffer := StreamPeerBuffer.new()
 	buffer.put_data(data)
 	buffer.seek(0)
-	
 	var message : Dictionary = {}
 	
-	message[StateKeys.TICK] = buffer.get_u32()
+	message[NodeStateKeys.NODE_PATH] = buffer.get_string()
 	
-	var node_path : String = buffer.get_string()
-	assert(node_path.is_empty() == false, "Recieved state with no node path")
-	message[StateKeys.NODE_PATH] = node_path
+	message[NodeStateKeys.ASSET] = buffer.get_string()
 	
-	var node_scene_asset: String = buffer.get_string()
-	assert(node_path.is_empty() == false, "Recieved state with no scene asset")
-	message[StateKeys.NODE_SCENE_ASSET] = node_scene_asset
+	message[NodeStateKeys.OWNER] = buffer.get_string()
 	
-	var node_owner_peer: int = buffer.get_u16()
-	message[StateKeys.NODE_OWNING_PEER] = node_owner_peer
+	var state_size: int = buffer.get_u16()
+	message[NodeStateKeys.STATE] = buffer.get_data(state_size)
 	
-	var state_size := buffer.get_u16()
-	var state_data_array : Array = buffer.get_data(state_size)
-	message[StateKeys.STATE] = deserialize_state(state_data_array[1])
+	var input_size: int = buffer.get_u16()
+	message[NodeStateKeys.PLAYER_INPUT] = buffer.get_data(input_size)
+	
+	return message
 
-	var input_size := buffer.get_u16()
-	if input_size == 0:
-		message[StateKeys.PLAYER_INPUT_DATA] = {}
-	else:
-		message[StateKeys.PLAYER_INPUT_DATA] = deserialize_node_input(buffer.get_data(input_size)[1])
+func serialize_state_update_message(message: Dictionary) -> PackedByteArray:
+	var buffer := StreamPeerBuffer.new()
+	buffer.resize(DEFAULT_MESSAGE_SIZE)
 	
-	message[StateKeys.OLDEST_INPUT_TICK_UNRECIEVED] = buffer.get_u32()
+	#TICK
+	buffer.put_u32(message.get(StateUpdateKeys.TICK, 0))
+	#OLDEST_INPUT_TICK_UNRECIEVED
+	buffer.put_u32(message.get(StateUpdateKeys.OLDEST_INPUT_TICK_UNRECIEVED,0))
+	#THROTTLE_COMMAND,
+	buffer.put_8(message.get(StateUpdateKeys.THROTTLE_COMMAND, 0))
 	
-	message[StateKeys.THROTTLE_COMMAND] = buffer.get_8()
+	#DESTROY_EVENTS, array of strings
+	var default_destroy_array: Array[NodePath] = []
+	var destroy_nodes: Array[NodePath] = message.get(StateUpdateKeys.DESTROY_EVENTS, default_destroy_array)
+	buffer.put_u16(destroy_nodes.size())	
+	for node_path: NodePath in destroy_nodes:
+		buffer.put_string(node_path)  
+	
+	#STATE, array of data
+	var default_node_array: Array[PackedByteArray] = []
+	var all_node_data: Array[PackedByteArray] = message.get(StateUpdateKeys.STATE, default_node_array)
+	buffer.put_u16(all_node_data.size())
+	for node_data in all_node_data:
+		buffer.put_u16(node_data.size())
+		buffer.put_data(node_data)
+	
+	buffer.resize(buffer.get_position())
+	return buffer.data_array
+
+func deserialize_state_update_message(data: PackedByteArray) -> Dictionary:
+	var buffer := StreamPeerBuffer.new()
+	buffer.put_data(data)
+	buffer.seek(0)
+	var message : Dictionary = {}
+	
+	message[StateUpdateKeys.TICK] = buffer.get_u32()
+	
+	message[StateUpdateKeys.OLDEST_INPUT_TICK_UNRECIEVED] = buffer.get_u32()
+	
+	message[StateUpdateKeys.THROTTLE_COMMAND] = buffer.get_8()
+	
+	# destroy events
+	var destroy_event_count: int = buffer.get_u16()
+	var destroy_events: Array[NodePath] = []
+	for count in destroy_event_count:
+		var destroyed_node: String = buffer.get_string()
+		destroy_events.push_back(destroyed_node)
+
+	message[StateUpdateKeys.DESTROY_EVENTS] = destroy_events
+
+	# node states
+	var node_state_count: int = buffer.get_u16()
+	var node_state_messages: Array[PackedByteArray] = []
+	for count in node_state_count:
+		var node_state_message_size: int = buffer.get_u16()
+		var serialized_node_state_message: PackedByteArray = buffer.get_data(node_state_message_size)
+		node_state_messages.push_back(serialized_node_state_message)
+	
+	message[StateUpdateKeys.STATE] = node_state_messages
 	
 	return message
 

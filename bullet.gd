@@ -23,10 +23,10 @@ func _save_state() -> Dictionary:
 
 ## Network Plugin
 func _load_state(state: Dictionary) -> void:
-	position = state["position"]
-	velocity = state["velocity"]
-	total_time = state["total_time"]
-	instigator = state["insti"]
+	position = state.get("position", 0)
+	velocity = state.get("velocity", 0)
+	total_time = state.get("total_time", 0)
+	instigator = state.get("insti",NodePath())
 
 ## Network Plugin
 func _network_transform_process(input:Dictionary) -> void:
