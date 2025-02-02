@@ -20,9 +20,9 @@ https://streamable.com/stl49b
 * Athoritative Dedicated Server
 * Client-side rollback and prediction
 * Server input buffer.
+* Upstream Throttling: Speed up or slow down clients to ensure they dont get too far ahead or behind the server.
 
 ### Planned Features:
-* Upstream Throttling: Speed up or slow down clients to ensure they dont get too far ahead or behind the server.
 * C++ port: I'd like to re-write this in C++ to improve performance. 
 
 ### Inspirations
