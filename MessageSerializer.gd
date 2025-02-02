@@ -7,7 +7,8 @@ const DEFAULT_MESSAGE_SIZE = 1024
 
 enum PlayerInputKeys {
 	INITIAL_TICK,
-	PLAYER_INPUT_DATA
+	PLAYER_INPUT_DATA,
+	LAST_RECEIVED_STATE_TICK
 }
 
 enum StateUpdateKeys {
@@ -40,6 +41,8 @@ func serialize_node_input(node_input: Dictionary) -> PackedByteArray:
 	return var_to_bytes(node_input)
 
 func deserialize_node_input(node_input_data: PackedByteArray) -> Dictionary:
+	if node_input_data.is_empty():
+		return {}
 	return bytes_to_var(node_input_data)
 
 ## state: node_path -> Dictionary (which contains the generated node state)
@@ -59,8 +62,8 @@ func serializer_node_state_message(state_message: Dictionary) -> PackedByteArray
 	var asset: String = state_message.get(NodeStateKeys.ASSET, "")
 	buffer.put_string(asset)
 	
-	var owner: String = state_message.get(NodeStateKeys.OWNER, "")
-	buffer.put_string(owner)
+	var owner: int = state_message.get(NodeStateKeys.OWNER, 1)
+	buffer.put_u32(owner)
 	
 	var state: PackedByteArray = state_message.get(NodeStateKeys.STATE, PackedByteArray())
 	buffer.put_u16(state.size())
@@ -83,13 +86,13 @@ func deserializer_node_state_message(data: PackedByteArray) -> Dictionary:
 	
 	message[NodeStateKeys.ASSET] = buffer.get_string()
 	
-	message[NodeStateKeys.OWNER] = buffer.get_string()
+	message[NodeStateKeys.OWNER] = buffer.get_u32()
 	
 	var state_size: int = buffer.get_u16()
-	message[NodeStateKeys.STATE] = buffer.get_data(state_size)
+	message[NodeStateKeys.STATE] = buffer.get_data(state_size)[1]
 	
 	var input_size: int = buffer.get_u16()
-	message[NodeStateKeys.PLAYER_INPUT] = buffer.get_data(input_size)
+	message[NodeStateKeys.PLAYER_INPUT] = buffer.get_data(input_size)[1]
 	
 	return message
 
@@ -148,7 +151,7 @@ func deserialize_state_update_message(data: PackedByteArray) -> Dictionary:
 	var node_state_messages: Array[PackedByteArray] = []
 	for count in node_state_count:
 		var node_state_message_size: int = buffer.get_u16()
-		var serialized_node_state_message: PackedByteArray = buffer.get_data(node_state_message_size)
+		var serialized_node_state_message: PackedByteArray = buffer.get_data(node_state_message_size)[1]
 		node_state_messages.push_back(serialized_node_state_message)
 	
 	message[StateUpdateKeys.STATE] = node_state_messages
