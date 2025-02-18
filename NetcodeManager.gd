@@ -120,6 +120,12 @@ class NodeLifetime extends Object:
 		destroy_tick = _destroy
 		asset = _asset
 		owning_peer = _owning_peer
+	
+	func is_alive(tick: int) -> bool:
+		if tick >= spawn_tick && (destroy_tick == -1 || tick < destroy_tick):
+			return true
+		
+		return false
 
 class PlayerInput extends Object:
 	var tick : int = 0
@@ -198,15 +204,6 @@ func get_or_add_tick_state(tick : int) -> TickState:
 		var state_index := tick_delta - 1
 		assert("get_or_add_tick_state returned wrong tick. Wanted %d, returned %d" % [tick, state_buffer[state_index].tick])
 		return state_buffer[tick_delta - 1]
-
-func is_node_alive(node_path: String, tick: int) -> bool:
-	for manifest_node_path in node_manifest:
-		if node_path == manifest_node_path:
-			var node_lifetime: NodeLifetime = node_manifest[manifest_node_path]
-			if tick >= node_lifetime.spawn_tick && \
-			(node_lifetime.destroy_tick == -1 || tick < node_lifetime.destroy_tick):
-				
-	return false
 
 func network_free(node: Node) -> void:
 	var tick_state: TickState = get_or_add_tick_state(current_tick)
@@ -492,8 +489,7 @@ func save_game_state(tick: int, should_overwrite_true_states : bool = true) -> b
 
 ## loads game state.
 ## Arguement only_load_true_states is for loading each tick of a rollback after the inital load were we want to everything.
-# TODO This is possibly the simplest implementation possible for spawning/destroying networked actors. A better system is probably needed.
-func load_game_state(tick: int, only_load_true_states : bool = false) -> bool:
+func load_game_state(tick: int) -> bool:
 	var tick_state := get_tick_state(tick)
 
 	if tick_state == null:
@@ -504,34 +500,15 @@ func load_game_state(tick: int, only_load_true_states : bool = false) -> bool:
 	
 	var current_nodes : Array[Node] = get_tree().get_nodes_in_group(NETWORK_ENTITY_GROUP)
 	
-	# Create any nodes that are missing
-	#for state_path: String in entity_states:
-	#	# if it already exists then skip
-	#	if current_nodes.any(func(node: Node)-> bool: return String(node.get_path()) == state_path):
-	#		continue
-	#	
-	#	var entity_state: EntityState = entity_states[state_path]
-	#	
-	#	# create missing scene
-	#	# TODO: synch Loading assets like this is probably a terrible idea
-	#	if entity_state.is_true || only_load_true_states == false:
-	#		var scene: PackedScene = load(entity_state.scene_asset)
-	#		var instance: Node = scene.instantiate()
-	#		var node_path: NodePath = NodePath(state_path)
-	#		instance.set_multiplayer_authority(entity_state.owning_peer)
-	#		instance.name = String(node_path.get_name(node_path.get_name_count() - 1))
-#
-	#		get_tree().current_scene.add_child(instance)
-	#		current_nodes.push_back(instance)
-	
 	# loop over manifest, and ensure proper spawns
 	for manifest_node_path: String in node_manifest:
 		var node_lifetime: NodeLifetime = node_manifest[manifest_node_path]
 		
+		if node_lifetime.is_alive(tick) == false:
+			continue
+	
 		# if node doesnt exist, spawn it.
 		if current_nodes.any(func(node: Node)-> bool: return String(node.get_path()) == manifest_node_path) == false:
-			
-			
 			# create missing scene
 			# TODO: synch Loading assets like this is probably a terrible idea
 			var scene: PackedScene = load(node_lifetime.asset)
@@ -542,27 +519,28 @@ func load_game_state(tick: int, only_load_true_states : bool = false) -> bool:
 
 			get_tree().current_scene.add_child(instance)
 			current_nodes.push_back(instance)
-			
-		# if node is past it's lifetime, then destroy it.
 		
-	# If we are doing an initial rollback load, we delete everything thats not in the manifest. 
+	# We are doing an initial rollback load, we delete everything thats not in the manifest. 
 	# If its not in the manifest then it's some kind of client prediction, that never had a server-side spawn.
 	for node in current_nodes:
-		# loop, check if this node has been destroyed
-		for manifest_node_path: String in node_manifest: 
-			
-		# node does not have an entry in the manifest then it is a prediction and should be destroyed
-	# update existing nodes
-	for node in current_nodes: 
 		if !node.has_method(LOAD_STATE_FUNCTION) || !node.is_inside_tree() || node.is_queued_for_deletion():
 			continue
 			
-		var node_path : String = node.get_path()
-		var entity_state : EntityState = entity_states.get(node_path)
+		var node_path: NodePath = node.get_path()
+		var manifest_entry: NodeLifetime = node_manifest.get(node_path)
 		
-		if entity_state != null && (entity_state.is_true || only_load_true_states == false):
-			node.call(LOAD_STATE_FUNCTION, entity_state.state)
-	
+		# node does not have an entry in the manifest then it is a prediction and should be destroyed
+		if manifest_entry == null || manifest_entry.is_alive(tick) == false:
+			node.queue_free()
+			continue
+			
+		# update existing nodes
+		var entity_state : EntityState = entity_states.get(node_path)
+		if entity_state == null:
+			push_error("Could Not find Entity State for node %n tick %d" % [node_path, tick])
+			return false
+		node.call(LOAD_STATE_FUNCTION, entity_state.state)
+
 	return true
 
 ## Gathers all the input for everynode this client has authority over. Called on clients. 
@@ -588,7 +566,7 @@ func perform_rollback() -> bool:
 	is_rollback = true
 	
 	# Rewind Time and load rollback state.
-	if not load_game_state(rollback_tick, false):
+	if not load_game_state(rollback_tick):
 		return false
 	
 	# loop and perform ticks.
@@ -631,7 +609,7 @@ func send_state_to_all_clients() -> void:
 	# generate list of destruction events, from the last client acknoledgement to last_processed_tick. This will be attached to first packet.
 	var latest_state: TickState = get_tick_state(current_tick)
 	if latest_state != null:
-		primary_message[message_serializer.StateUpdateKeys.DESTROY_EVENTS] = latest_state.destroy_events
+		var serialized_manifest = message_serializer.serialize_manifest()
 	
 		# generate serialized list of most current states. If this gets too big, then break up into subsequent State-Only packets.
 		var serialized_node_state_messages: Array[PackedByteArray] = []
@@ -653,10 +631,12 @@ func send_state_to_all_clients() -> void:
 			
 			var serialized_node_state_message: PackedByteArray = message_serializer.serializer_node_state_message(node_state_message)
 			var debug_node_message: Dictionary = message_serializer.deserializer_node_state_message(serialized_node_state_message)
+			
 			assert(node_state_message[message_serializer.NodeStateKeys.NODE_PATH] == debug_node_message[message_serializer.NodeStateKeys.NODE_PATH])
 			assert(node_state_message[message_serializer.NodeStateKeys.ASSET] == debug_node_message[message_serializer.NodeStateKeys.ASSET])
 			assert(message_serializer.default_deserialize_state(node_state_message[message_serializer.NodeStateKeys.STATE]) == message_serializer.default_deserialize_state(debug_node_message[message_serializer.NodeStateKeys.STATE]))
 			assert(node_state_message[message_serializer.NodeStateKeys.OWNER] == debug_node_message[message_serializer.NodeStateKeys.OWNER])
+			
 			serialized_node_state_messages.push_back(serialized_node_state_message)
 		
 		primary_message[message_serializer.StateUpdateKeys.STATE] = serialized_node_state_messages

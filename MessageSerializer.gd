@@ -1,5 +1,7 @@
 extends Object
 
+const NetcodeManager = preload("res://NetcodeManager.gd")
+
 # Even though ENet will handle fragmenting overlarge messages into packets for me, I do in general 
 # want to keep packet sizes below the average MTU if possible.
 # See https://gafferongames.com/post/packet_fragmentation_and_reassembly/
@@ -15,7 +17,7 @@ enum StateUpdateKeys {
 	TICK,
 	OLDEST_INPUT_TICK_UNRECIEVED,
 	THROTTLE_COMMAND,
-	DESTROY_EVENTS,
+	MANIFEST,
 	STATE
 }
 
@@ -51,6 +53,41 @@ func default_serialize_state(state: Dictionary) -> PackedByteArray:
 	
 func default_deserialize_state(state_data: PackedByteArray) -> Dictionary:
 	return bytes_to_var(state_data)
+
+func serialize_manifest(manifest: Dictionary) -> PackedByteArray:
+	var buffer := StreamPeerBuffer.new()
+	buffer.resize(DEFAULT_MESSAGE_SIZE)
+	
+	buffer.put_u32(manifest.size())
+	
+	for node_path: String in manifest:
+		var lifetime: NetcodeManager.NodeLifetime = manifest.get(node_path) 
+		buffer.put_string(node_path)
+		buffer.put_u32(lifetime.spawn_tick)
+		buffer.put_u32(lifetime.destroy_tick)
+		buffer.put_string(lifetime.asset)
+		buffer.put_u32(lifetime.owning_peer)
+	
+	buffer.resize(buffer.get_position())
+	return buffer.data_array
+
+func deserialize_manifest(data: PackedByteArray) -> Dictionary:
+	var buffer := StreamPeerBuffer.new()
+	buffer.put_data(data)
+	buffer.seek(0)
+	var manifest : Dictionary = {}
+	
+	var size: int = buffer.get_u32()
+	for index: int in size:
+		var node_path: String = buffer.get_string()
+		var spawn: int = buffer.get_u32()
+		var destroy: int = buffer.get_u32()
+		var asset: String = buffer.get_string()
+		var owner: int = buffer.get_u32()
+		var lifetime: NetcodeManager.NodeLifetime = NetcodeManager.NodeLifetime.new(spawn, destroy, asset, owner)
+		manifest[node_path] = lifetime
+	
+	return manifest
 
 func serializer_node_state_message(state_message: Dictionary) -> PackedByteArray:
 	var buffer := StreamPeerBuffer.new()
@@ -107,12 +144,12 @@ func serialize_state_update_message(message: Dictionary) -> PackedByteArray:
 	#THROTTLE_COMMAND,
 	buffer.put_8(message.get(StateUpdateKeys.THROTTLE_COMMAND, 0))
 	
-	#DESTROY_EVENTS, array of strings
-	var default_destroy_array: Array[NodePath] = []
-	var destroy_nodes: Array[NodePath] = message.get(StateUpdateKeys.DESTROY_EVENTS, default_destroy_array)
-	buffer.put_u16(destroy_nodes.size())	
-	for node_path: NodePath in destroy_nodes:
-		buffer.put_string(node_path)  
+	##DESTROY_EVENTS, array of strings
+	#var default_destroy_array: Array[NodePath] = []
+	#var destroy_nodes: Array[NodePath] = message.get(StateUpdateKeys.DESTROY_EVENTS, default_destroy_array)
+	#buffer.put_u16(destroy_nodes.size())	
+	#for node_path: NodePath in destroy_nodes:
+	#	buffer.put_string(node_path)  
 	
 	#STATE, array of data
 	var default_node_array: Array[PackedByteArray] = []
@@ -144,7 +181,7 @@ func deserialize_state_update_message(data: PackedByteArray) -> Dictionary:
 		var destroyed_node: String = buffer.get_string()
 		destroy_events.push_back(destroyed_node)
 
-	message[StateUpdateKeys.DESTROY_EVENTS] = destroy_events
+	#message[StateUpdateKeys.DESTROY_EVENTS] = destroy_events
 
 	# node states
 	var node_state_count: int = buffer.get_u16()
