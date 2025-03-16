@@ -536,7 +536,7 @@ func load_game_state(tick: int) -> bool:
 		if !node.has_method(LOAD_STATE_FUNCTION) || !node.is_inside_tree() || node.is_queued_for_deletion():
 			continue
 			
-		var node_path: NodePath = node.get_path()
+		var node_path: String = String(node.get_path())
 		var manifest_entry: NodeLifetime = node_manifest.get(node_path)
 		
 		# node does not have an entry in the manifest then it is a prediction and should be destroyed
@@ -662,11 +662,8 @@ func send_state_to_all_clients() -> void:
 			if lifetime.spawn_tick >= player.client_received_state_tick || lifetime.destroy_tick > current_tick:
 				node_manifest_to_send[node_path] = lifetime
 		
-		for manifest_node_path: String in node_manifest:
-			print("Server: %d - %s" % [get_current_tick(), manifest_node_path])
-		
 		var serialized_manifest: PackedByteArray = message_serializer.serialize_manifest(node_manifest_to_send)
-		var deserialized_manifest: Dictionary = message_serializer.deserialize_manifest(serialized_manifest)
+		#var deserialized_manifest: Dictionary = message_serializer.deserialize_manifest(serialized_manifest)
 		#assert(deserialized_manifest == node_manifest_to_send)
 		primary_message[message_serializer.StateUpdateKeys.MANIFEST] = serialized_manifest
 		
@@ -704,12 +701,8 @@ func receive_state_update(serialized_message: PackedByteArray) -> void:
 	
 	var tick_state : TickState = get_or_add_tick_state(tick)
 	
-	# TODO update node manifest
 	var new_node_manifest: Dictionary = message_serializer.deserialize_manifest(message[message_serializer.StateUpdateKeys.MANIFEST])
-	
 	node_manifest.merge(new_node_manifest, true)
-	for manifest_node_path: String in node_manifest:
-		print("%d: %d - %s" % [multiplayer.get_unique_id(), get_current_tick(), manifest_node_path])
 	
 	var node_states: Array[PackedByteArray] = message[message_serializer.StateUpdateKeys.STATE]
 	for node_state in node_states:

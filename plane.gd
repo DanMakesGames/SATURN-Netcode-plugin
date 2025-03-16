@@ -72,6 +72,8 @@ func _network_transform_process(input:Dictionary) -> void:
 			fresh_bullet.name = fresh_bullet.name.validate_node_name()
 			fresh_bullet.initialize(get_path(), velocity, -forward)
 			fresh_bullet.position = self.position
+			if multiplayer.is_server():
+				NetcodeManager.node_manifest[String(fresh_bullet.get_path())] = NetcodeManager.NodeLifetime.new(NetcodeManager.get_current_tick(), 0, "res://bullet.tscn",multiplayer.get_unique_id())
 		shoot_old = true
 	else:
 		shoot_old = false
