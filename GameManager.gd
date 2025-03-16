@@ -49,3 +49,4 @@ func setup_round() -> void:
 		player_planes.push_back(fresh_player_plane)
 		fresh_player_plane.on_died.connect(self.on_player_death)
 		print("Server: Spawn player %s: %d" % [fresh_player_plane.get_path(), peer_id])
+		NetcodeManager.node_manifest[String(fresh_player_plane.get_path())] = NetcodeManager.NodeLifetime.new(NetcodeManager.get_current_tick(), 0, "res://plane.tscn",peer_id)

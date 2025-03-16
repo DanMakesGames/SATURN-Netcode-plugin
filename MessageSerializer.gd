@@ -144,12 +144,10 @@ func serialize_state_update_message(message: Dictionary) -> PackedByteArray:
 	#THROTTLE_COMMAND,
 	buffer.put_8(message.get(StateUpdateKeys.THROTTLE_COMMAND, 0))
 	
-	##DESTROY_EVENTS, array of strings
-	#var default_destroy_array: Array[NodePath] = []
-	#var destroy_nodes: Array[NodePath] = message.get(StateUpdateKeys.DESTROY_EVENTS, default_destroy_array)
-	#buffer.put_u16(destroy_nodes.size())	
-	#for node_path: NodePath in destroy_nodes:
-	#	buffer.put_string(node_path)  
+	# manifest
+	var manifest_data: PackedByteArray = message.get(StateUpdateKeys.MANIFEST)
+	buffer.put_u16(manifest_data.size())
+	buffer.put_data(manifest_data)
 	
 	#STATE, array of data
 	var default_node_array: Array[PackedByteArray] = []
@@ -174,14 +172,10 @@ func deserialize_state_update_message(data: PackedByteArray) -> Dictionary:
 	
 	message[StateUpdateKeys.THROTTLE_COMMAND] = buffer.get_8()
 	
-	# destroy events
-	var destroy_event_count: int = buffer.get_u16()
-	var destroy_events: Array[NodePath] = []
-	for count in destroy_event_count:
-		var destroyed_node: String = buffer.get_string()
-		destroy_events.push_back(destroyed_node)
-
-	#message[StateUpdateKeys.DESTROY_EVENTS] = destroy_events
+	# manifest
+	var manifest_size: int = buffer.get_u16()
+	var serialized_manifest: PackedByteArray = buffer.get_data(manifest_size)[1]
+	message[StateUpdateKeys.MANIFEST] = serialized_manifest
 
 	# node states
 	var node_state_count: int = buffer.get_u16()
@@ -203,6 +197,9 @@ func serialize_input_message(message : Dictionary) -> PackedByteArray:
 	assert(tick != -1, "Input message has no tick element.")
 	buffer.put_u32(tick)
 	
+	var last_recieved_tick: int = message[PlayerInputKeys.LAST_RECEIVED_STATE_TICK]
+	buffer.put_u32(last_recieved_tick)
+	
 	var player_input_ticks : Array[PackedByteArray] = message.get(PlayerInputKeys.PLAYER_INPUT_DATA)
 	assert(player_input_ticks != null, "Input message has not input element")
 	
@@ -223,6 +220,7 @@ func deserialize_input_message(data : PackedByteArray) -> Dictionary:
 	var message : Dictionary = {}
 	
 	message[PlayerInputKeys.INITIAL_TICK] = buffer.get_u32()
+	message[PlayerInputKeys.LAST_RECEIVED_STATE_TICK] = buffer.get_u32()
 	
 	var player_input_data : Array[PackedByteArray] = []
 	

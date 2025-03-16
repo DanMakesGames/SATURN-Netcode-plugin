@@ -15,6 +15,9 @@ const MAX_INPUT_BUFFER_SIZE_SERVER : int = 500
 const MAX_BUFFER_SIZE_CLIENT : int = 500
 const MAX_PLAYER_INPUT_TICKS_PER_MESSAGE: int = 5
 
+#  node manifest entries older than this are cleaned up.
+const MAX_NODE_MANIFEST_AGE: int = 60
+
 enum NetworkState 
 {
 	INACTIVE,
@@ -73,6 +76,8 @@ class Player extends Object:
 	var ping: int = -1
 	var tick_throttle: int = 0
 	var oldest_unrecieved_input_tick: int = 0
+	# SERVER
+	var client_received_state_tick: int = 0
 
 var players : Array[Player]
 
@@ -100,18 +105,21 @@ class TickState extends Object:
 ## State for a single node at a single frame
 class EntityState extends Object:
 	## Is this game state a client-side prediction or a true state from the server? Always true on the server.
+	#TODO, is this redundant? We never want to override a true state, but now that we send state as a contigous block hopefully this should be impossible. 
 	var is_true: bool = false
 	
 	## Used for spawning this on the client or rollbacks
+	# TODO: Now that we have the node_manifest, this information is redundant. If we need to lookup the asset we can just look it up in the manifest.
 	var scene_asset: String
 	
+	# TODO: Now that we have the node_manifest, this information is redundant. Just look it up in the manifest.
 	var owning_peer: int = 1
 	
 	var state: Dictionary
 
 class NodeLifetime extends Object:
-	var spawn_tick: int = -1
-	var destroy_tick: int = -1
+	var spawn_tick: int = 0
+	var destroy_tick: int = 0
 	var asset: String
 	var owning_peer: int = 1
 	
@@ -122,7 +130,8 @@ class NodeLifetime extends Object:
 		owning_peer = _owning_peer
 	
 	func is_alive(tick: int) -> bool:
-		if tick >= spawn_tick && (destroy_tick == -1 || tick < destroy_tick):
+		# we consider destroy_tick == 0 to mean it hasnt been destroyed yet. I did this to make it so I can send unsigned ints across the net.
+		if tick >= spawn_tick && (destroy_tick == 0 || tick < destroy_tick):
 			return true
 		
 		return false
@@ -337,6 +346,7 @@ func _physics_process(delta: float) -> void:
 	# Let's save the input buffer on the server so we can save it as a replay?
 	cleanup_state_buffer()
 	cleanup_input_buffer()
+	#cleanup_manifest()
 	
 	if multiplayer.is_server() == false:
 		if perform_realtime_tick() == false:
@@ -365,7 +375,7 @@ func perform_server_realtime_tick() -> bool:
 			
 	if network_state == NetworkState.STARTED:
 		last_processed_tick = last_processed_tick + 1
-
+	
 	send_state_to_all_clients()
 	return true
 	
@@ -605,12 +615,11 @@ func send_state_to_all_clients() -> void:
 	var primary_message: Dictionary
 	# Pack on all housekeeping information, like oldest_unrecieved_input_tick, tick_throttle. This will only be attached to first packet.
 	primary_message[message_serializer.StateUpdateKeys.TICK] = current_tick
-	
+
 	# generate list of destruction events, from the last client acknoledgement to last_processed_tick. This will be attached to first packet.
 	var latest_state: TickState = get_tick_state(current_tick)
 	if latest_state != null:
-		var serialized_manifest = message_serializer.serialize_manifest()
-	
+		
 		# generate serialized list of most current states. If this gets too big, then break up into subsequent State-Only packets.
 		var serialized_node_state_messages: Array[PackedByteArray] = []
 		for node_path: String in latest_state.entity_states:
@@ -645,14 +654,30 @@ func send_state_to_all_clients() -> void:
 	for player in players:
 		primary_message[message_serializer.StateUpdateKeys.OLDEST_INPUT_TICK_UNRECIEVED] = player.oldest_unrecieved_input_tick
 		primary_message[message_serializer.StateUpdateKeys.THROTTLE_COMMAND] = player.tick_throttle
+		
+		# grab all the nodes that have changed since last confirmation from the client
+		var node_manifest_to_send := {}
+		for node_path: String in node_manifest:
+			var lifetime: NodeLifetime = node_manifest[node_path]
+			if lifetime.spawn_tick >= player.client_received_state_tick || lifetime.destroy_tick > current_tick:
+				node_manifest_to_send[node_path] = lifetime
+		
+		for manifest_node_path: String in node_manifest:
+			print("Server: %d - %s" % [get_current_tick(), manifest_node_path])
+		
+		var serialized_manifest: PackedByteArray = message_serializer.serialize_manifest(node_manifest_to_send)
+		var deserialized_manifest: Dictionary = message_serializer.deserialize_manifest(serialized_manifest)
+		#assert(deserialized_manifest == node_manifest_to_send)
+		primary_message[message_serializer.StateUpdateKeys.MANIFEST] = serialized_manifest
+		
 		var serialized_message: PackedByteArray = message_serializer.serialize_state_update_message(primary_message)
 		var deserialized_message: Dictionary = message_serializer.deserialize_state_update_message(serialized_message)
 		
 		assert(primary_message[message_serializer.StateUpdateKeys.TICK] == deserialized_message[message_serializer.StateUpdateKeys.TICK])
 		assert(primary_message[message_serializer.StateUpdateKeys.OLDEST_INPUT_TICK_UNRECIEVED] == deserialized_message[message_serializer.StateUpdateKeys.OLDEST_INPUT_TICK_UNRECIEVED])
 		assert(primary_message[message_serializer.StateUpdateKeys.THROTTLE_COMMAND] == deserialized_message[message_serializer.StateUpdateKeys.THROTTLE_COMMAND])
-		assert(primary_message[message_serializer.StateUpdateKeys.DESTROY_EVENTS].size() == deserialized_message[message_serializer.StateUpdateKeys.DESTROY_EVENTS].size())
 		assert(primary_message[message_serializer.StateUpdateKeys.STATE].size() == deserialized_message[message_serializer.StateUpdateKeys.STATE].size())
+		assert(primary_message[message_serializer.StateUpdateKeys.MANIFEST] == deserialized_message[message_serializer.StateUpdateKeys.MANIFEST])
 		
 		send_state_to_client(player.peer_id, serialized_message)
 
@@ -668,6 +693,9 @@ func receive_state_update(serialized_message: PackedByteArray) -> void:
 	if tick > debug_last_recieved_state_tick:
 		debug_last_recieved_state_tick = tick
 	
+	if tick > last_received_state_tick:
+		last_received_state_tick = tick
+	
 	tick_throttle = message[message_serializer.StateUpdateKeys.THROTTLE_COMMAND]
 	
 	var new_input_unrecieved : int = message[message_serializer.StateUpdateKeys.OLDEST_INPUT_TICK_UNRECIEVED]
@@ -675,7 +703,13 @@ func receive_state_update(serialized_message: PackedByteArray) -> void:
 		last_unconfirmed_player_tick = new_input_unrecieved
 	
 	var tick_state : TickState = get_or_add_tick_state(tick)
-	tick_state.destroy_events = message[message_serializer.StateUpdateKeys.DESTROY_EVENTS]
+	
+	# TODO update node manifest
+	var new_node_manifest: Dictionary = message_serializer.deserialize_manifest(message[message_serializer.StateUpdateKeys.MANIFEST])
+	
+	node_manifest.merge(new_node_manifest, true)
+	for manifest_node_path: String in node_manifest:
+		print("%d: %d - %s" % [multiplayer.get_unique_id(), get_current_tick(), manifest_node_path])
 	
 	var node_states: Array[PackedByteArray] = message[message_serializer.StateUpdateKeys.STATE]
 	for node_state in node_states:
@@ -694,50 +728,6 @@ func receive_state_update(serialized_message: PackedByteArray) -> void:
 		if entity_state.is_true == false:
 			request_rollback(tick)
 			entity_state.is_true = true
-	
-### On Client. State update for a single node.
-#func on_recieve_node_state_update(serialized_message: PackedByteArray) -> void:
-#	assert(serialized_message.size() != 0, "Recieved empty state message")
-#	
-#	var message := message_serializer.deserialize_state_message(serialized_message)
-#	assert(message.is_empty() != true, "Deserialization issue.")
-#	
-#	var tick : int = message[message_serializer.StateKeys.TICK]
-#	# TODO, if we are recieving states from the future, the client should probably throttle up to catch up.
-#	
-#	# we have the state for a single node here
-#	var tick_state : TickState = get_or_add_tick_state(tick)
-#
-#	# update state buffer
-#	var node_path : String = message[message_serializer.StateKeys.NODE_PATH]
-#	if node_path.is_empty() != true:
-#		var entity_state : EntityState = tick_state.entity_states.get_or_add(node_path, EntityState.new())
-#		entity_state.scene_asset = message[message_serializer.StateKeys.NODE_SCENE_ASSET]
-#		entity_state.owning_peer = message[message_serializer.StateKeys.NODE_OWNING_PEER]
-#		entity_state.state = message[message_serializer.StateKeys.STATE]
-#		
-#		# request a rollback if we just recieved a new state
-#		# TODO: better more complex means of determining if we need to do a rollback.
-#		if entity_state.is_true == false:
-#			request_rollback(tick)
-#			entity_state.is_true = true
-#			
-#		# update input buffer
-#		var input_peer_id : int = message[message_serializer.StateKeys.NODE_OWNING_PEER] 
-#		var player_input := get_or_add_player_input(input_peer_id, tick)
-#		player_input.input[node_path] = message[message_serializer.StateKeys.PLAYER_INPUT_DATA]
-#		player_input.is_predicted = false
-#	
-#	var new_input_unrecieved : int = message[message_serializer.StateKeys.OLDEST_INPUT_TICK_UNRECIEVED]
-#	if new_input_unrecieved > last_unconfirmed_player_tick:
-#		last_unconfirmed_player_tick = new_input_unrecieved
-#	
-#	#if tick_throttle != message[message_serializer.StateKeys.THROTTLE_COMMAND]:
-#	#	print("throttle: %d, %d %d -> %d" % [multiplayer.get_unique_id(), current_tick, tick_throttle, message[message_serializer.StateKeys.THROTTLE_COMMAND]])
-#	tick_throttle = message[message_serializer.StateKeys.THROTTLE_COMMAND]
-#	
-#	if tick > debug_last_recieved_state_tick:
-#		debug_last_recieved_state_tick = tick
 
 func send_all_unconfirmed_input_to_server() -> void:
 	var unconfirmed_input: Array[PackedByteArray] = player_input_departure_buffer.duplicate()
@@ -786,7 +776,7 @@ func on_recieve_input_update(peer_id: int, serialized_message: PackedByteArray) 
 		player_input.input = recieved_player_input
 		player_input.is_predicted = false
 	
-	player.last_received_state_tick = message[message_serializer.PlayerInputKeys.LAST_RECEIVED_STATE_TICK]
+	player.client_received_state_tick = message[message_serializer.PlayerInputKeys.LAST_RECEIVED_STATE_TICK]
 	
 # client
 func cleanup_state_buffer() -> void:
@@ -812,7 +802,15 @@ func cleanup_input_buffer() -> void:
 		
 		for count in elements_to_remove:
 			player_input_buffer.pop_front()
-			
+
+# TODO this is probably really inefficient
+func cleanup_manifest() -> void:
+	# loop over the manifest and remove destroyed nodes that are old.
+	for node_path: String in node_manifest:
+		var lifetime : NodeLifetime = node_manifest[node_path]
+		if current_tick - lifetime.destroy_tick > MAX_NODE_MANIFEST_AGE:
+			node_manifest.erase(node_path) 
+
 func on_recieve_ping_update(ping: int, peer_id: int) -> void:
 	if multiplayer.is_server() == false:
 		peer_id = multiplayer.get_unique_id()
