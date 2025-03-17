@@ -16,7 +16,7 @@ const MAX_BUFFER_SIZE_CLIENT : int = 500
 const MAX_PLAYER_INPUT_TICKS_PER_MESSAGE: int = 5
 
 #  node manifest entries older than this are cleaned up.
-const MAX_NODE_MANIFEST_AGE: int = 60
+const MAX_NODE_MANIFEST_AGE: int = 300
 
 enum NetworkState 
 {
@@ -346,7 +346,7 @@ func _physics_process(delta: float) -> void:
 	# Let's save the input buffer on the server so we can save it as a replay?
 	cleanup_state_buffer()
 	cleanup_input_buffer()
-	#cleanup_manifest()
+	cleanup_manifest()
 	
 	if multiplayer.is_server() == false:
 		if perform_realtime_tick() == false:
@@ -801,7 +801,7 @@ func cleanup_manifest() -> void:
 	# loop over the manifest and remove destroyed nodes that are old.
 	for node_path: String in node_manifest:
 		var lifetime : NodeLifetime = node_manifest[node_path]
-		if current_tick - lifetime.destroy_tick > MAX_NODE_MANIFEST_AGE:
+		if current_tick - lifetime.destroy_tick > MAX_NODE_MANIFEST_AGE && lifetime.destroy_tick > 0:
 			node_manifest.erase(node_path) 
 
 func on_recieve_ping_update(ping: int, peer_id: int) -> void:
