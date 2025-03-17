@@ -214,13 +214,6 @@ func get_or_add_tick_state(tick : int) -> TickState:
 		assert("get_or_add_tick_state returned wrong tick. Wanted %d, returned %d" % [tick, state_buffer[state_index].tick])
 		return state_buffer[tick_delta - 1]
 
-func network_free(node: Node) -> void:
-	var tick_state: TickState = get_or_add_tick_state(current_tick)
-	if multiplayer.is_server():
-		tick_state.destroy_events.push_back(node.get_path())
-	
-	node.queue_free()
-
 func get_or_add_player_input(peer_id: int, tick: int) -> PlayerInput:
 	var default_array : Array[PlayerInput] = []
 	var player_input_buffer : Array[PlayerInput] = input_buffer.get_or_add(peer_id,default_array)
@@ -547,7 +540,7 @@ func load_game_state(tick: int) -> bool:
 		# update existing nodes
 		var entity_state : EntityState = entity_states.get(node_path)
 		if entity_state == null:
-			push_error("Could Not find Entity State for node %n tick %d" % [node_path, tick])
+			push_error("Could Not find Entity State for node %s tick %d" % [node_path, tick])
 			return false
 		node.call(LOAD_STATE_FUNCTION, entity_state.state)
 
@@ -659,7 +652,7 @@ func send_state_to_all_clients() -> void:
 		var node_manifest_to_send := {}
 		for node_path: String in node_manifest:
 			var lifetime: NodeLifetime = node_manifest[node_path]
-			if lifetime.spawn_tick >= player.client_received_state_tick || lifetime.destroy_tick > current_tick:
+			if lifetime.spawn_tick >= player.client_received_state_tick || lifetime.destroy_tick >= player.client_received_state_tick:
 				node_manifest_to_send[node_path] = lifetime
 		
 		var serialized_manifest: PackedByteArray = message_serializer.serialize_manifest(node_manifest_to_send)

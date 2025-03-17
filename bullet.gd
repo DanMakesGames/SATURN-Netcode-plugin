@@ -36,5 +36,10 @@ func _network_transform_process(input:Dictionary) -> void:
 	
 	total_time += fixed_delta
 	
-	#if total_time > life_time:
-	#	queue_free()
+	if total_time > life_time:
+		if multiplayer.is_server():
+			var node_path: String = String(get_path())
+			if NetcodeManager.node_manifest.has(node_path):
+				NetcodeManager.node_manifest.get(node_path).destroy_tick = NetcodeManager.get_current_tick()
+		
+		queue_free()

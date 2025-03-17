@@ -24,7 +24,6 @@ func _ready() -> void:
 	health = max_health
 
 func die() -> void:
-	NetcodeManager.network_free(self)
 	on_died.emit(self)
 
 func set_plane_sprite(index: int) -> void:
