@@ -7,8 +7,8 @@ const MAX_CLIENTS : int = 8
 signal server_connected
 signal server_connected_failed
 
-# index : Peer_id
-var player_assignments : Dictionary
+# index 0 is first player
+var player_assignments : Array[int]
 
 # sever side
 var players_loaded : int = 0
@@ -77,19 +77,16 @@ func tell_server_to_start_game(level: String) -> void:
 func start_game_server(level_to_load: String) -> void:
 	if multiplayer.is_server() == false:
 		return
-	# let server gather some ping data if it hasnt already.
-	
+
 	print("Server: Begin Game")
 	
-	var count : int = 0
 	for peer_id in multiplayer.get_peers():
-		player_assignments[count] = peer_id
-		count = count + 1
+		player_assignments.push_back(peer_id)
 		
 	load_game.rpc(player_assignments, level_to_load)
 
 @rpc("authority", "call_local", "reliable")
-func load_game(_player_assignments: Dictionary, level_to_load: String) -> void:
+func load_game(_player_assignments: Array[int], level_to_load: String) -> void:
 	player_assignments = _player_assignments
 	get_tree().change_scene_to_file(level_to_load)
 
@@ -103,3 +100,9 @@ func player_finished_loading() -> void:
 		NetcodeManager.begin_sync()
 		await get_tree().create_timer(2, true, true).timeout
 		NetcodeManager.game_start()
+
+func get_player_index(player_id: int) -> int:
+	for index in player_assignments.size():
+		if player_id == player_assignments[index]:
+			return index
+	return -1

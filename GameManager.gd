@@ -2,44 +2,44 @@ extends Node
 
 const PlayerPlaneScene = preload("res://plane.tscn")
 
+# player_id -> plane
 var player_planes: Array[PlayerPlane]
 
 var level: PlaneGameLevel
 
-# player_id -> wins
-var wins: Dictionary = {}
+# wins
+var wins: Array[int]
 
-func increment_wins(winner_peer_id: int) -> void:
-	if winner_peer_id != -1:
-		var current_score: int = wins.get_or_add(winner_peer_id, 0)
-		wins[winner_peer_id] = current_score + 1
+func increment_wins(winner_index: int) -> void:
+	wins.resize(Lobby.player_assignments.size())
+	wins[winner_index] += 1
 
 # Server
-func end_round(winner_peer_id: int) -> void:
-	increment_wins(winner_peer_id)
-	client_end_round.rpc(winner_peer_id)
+func end_round(winner_index: int) -> void:
+	increment_wins(winner_index)
+	client_end_round.rpc(winner_index)
 	
-	#setup_round()
+	setup_round()
 
 @rpc("call_remote","reliable","authority")
-func client_end_round(winner_peer_id: int)->void:
-	increment_wins(winner_peer_id)
+func client_end_round(winner_index: int)->void:
+	increment_wins(winner_index)
 	
 func on_player_death(dead_plane: PlayerPlane) -> void:
 	player_planes.erase(dead_plane)
 	
 	if player_planes.size() == 1:
-		end_round(player_planes[0].get_multiplayer_authority())
+		end_round(Lobby.get_player_index(player_planes[0].get_multiplayer_authority()))
 
 # Server
 func setup_round() -> void:
 	for plane in player_planes:
-		plane.queue_free()	
+		NetcodeManager.netcode_spawner.destroy_scene(plane)
 
 	player_planes.clear()
 
 	# spawn planes
-	for index: int in Lobby.player_assignments:
+	for index: int in Lobby.player_assignments.size():
 		var peer_id: int = Lobby.player_assignments[index]
 		var fresh_player_plane: Node = PlayerPlaneScene.instantiate()
 		get_tree().current_scene.add_child(fresh_player_plane)

@@ -12,8 +12,8 @@ var velocity : Vector2
 @export var rotation_rate: float = 2.2
 @export var drag_coefficient : float = 0.08
 @export var bullet_impulse: float = 100
-@export var max_health: int = 1
-@export var post_hit_frames: int = 60
+@export var max_health: int = 5
+@export var post_hit_frames: int = 120
 
 var shoot_old: bool = false
 var hit_invulnerability: bool = false
@@ -25,6 +25,7 @@ func _ready() -> void:
 
 func die() -> void:
 	on_died.emit(self)
+	NetcodeManager.netcode_spawner.destroy_scene(self)
 
 func set_plane_sprite(index: int) -> void:
 	if index == 0:
@@ -90,6 +91,8 @@ func _network_transform_process(input:Dictionary) -> void:
 	
 	if health <= 0:
 		die()
+	
+	get_parent().get_node("%HUD").update_player_health(Lobby.get_player_index(get_multiplayer_authority()), health)
 
 ## Network Plugin
 func _save_state() -> Dictionary:

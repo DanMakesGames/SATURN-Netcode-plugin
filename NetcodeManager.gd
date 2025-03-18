@@ -3,6 +3,7 @@ extends Node
 # Preloads
 const NetworkAdaptor = preload("res://NetworkAdaptor.gd")
 const MessageSerializer = preload("res://MessageSerializer.gd")
+const NetcodeSpawnerClass = preload("res://NetcodeSpawner.gd")
 
 # Consts
 const NETWORK_ENTITY_GROUP : String = "network_entity"
@@ -43,11 +44,12 @@ var is_rollback : bool = false
 
 ## this is the last player input tick that the server confirmed to us it recieved.
 var last_unconfirmed_player_tick : int = 0
-# used for updating var player_input_departure_buffer. DO NOT MANUALLY UPDATE
+## used for updating var player_input_departure_buffer. DO NOT MANUALLY UPDATE
 var last_unconfirmed_player_tick_old : int = 0
 
 var network_adaptor : NetworkAdaptor
 var message_serializer : MessageSerializer
+var netcode_spawner: NetcodeSpawnerClass
 
 ## Array of serialized player input that needs to be sent off to the server. Shrinks as we
 ## get confirmations from the server that it recieved our input. A client input tick must eventually
@@ -310,6 +312,9 @@ func _ready() -> void:
 	network_adaptor.recieve_ping_update.connect(self.on_recieve_ping_update)
 	
 	message_serializer = MessageSerializer.new()
+	
+	netcode_spawner = NetcodeSpawnerClass.new()
+	add_child(netcode_spawner)
 
 func begin_sync() -> void:
 	network_state = NetworkState.SYNCING

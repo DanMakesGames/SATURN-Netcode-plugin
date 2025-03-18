@@ -44,3 +44,28 @@ grow_horizontal = 0
 text = "Player 2
 "
 horizontal_alignment = 2
+
+[node name="Player1Wins" type="Label" parent="."]
+unique_name_in_owner = true
+offset_left = -1.0
+offset_top = 28.0
+offset_right = 103.0
+offset_bottom = 77.0
+text = "Player 1 Wins
+
+"
+
+[node name="Player2Wins" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -106.0
+offset_top = 26.0
+offset_right = -2.0
+offset_bottom = 49.0
+grow_horizontal = 0
+text = "Player 2 Wins
+"
+horizontal_alignment = 2

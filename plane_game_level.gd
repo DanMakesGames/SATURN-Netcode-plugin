@@ -1,6 +1,8 @@
 class_name PlaneGameLevel
 extends Node2D
 
+const plane= preload("res://plane.tscn")
+
 func _ready() -> void:
 	if Lobby.is_playing_online():
 		Lobby.player_finished_loading.rpc_id(1)
@@ -23,9 +25,6 @@ func _physics_process(delta: float) -> void:
 			return
 		
 		%HUD.update_connection_stats(player.ping, NetcodeManager.get_rollback_frames())
-		var player_0_wins: int = %GameManager.wins.get(Lobby.player_assignments.get(0), 0)
-		var player_1_wins: int = %GameManager.wins.get(Lobby.player_assignments.get(1), 0)
-		
-		%HUD.update_player(0, 0, player_0_wins)
-		%HUD.update_player(1, 0, player_1_wins)
-		
+
+		for index: int in %GameManager.wins.size():
+			%HUD.update_player_wins(index,%GameManager.wins[index])
